@@ -795,7 +795,7 @@ func convertDocument(
             serverError = result.error
 
         case (.pdf, .image):
-            outputData = conversionConvertToImage(content: latestDocument.content)
+            outputData = conversionConvertPDFToJPG(document: latestDocument, documentManager: documentManager)
             serverError = nil
 
         default:
@@ -809,7 +809,13 @@ func convertDocument(
             throw ConversionView.ConversionError.conversionFailed
         }
 
-        let filename = canonicalFilename
+        var filename = canonicalFilename
+        // If multi-page PDF was zipped, use .zip extension
+        if sourceFormat == .pdf && targetFormat == .image,
+           let firstTwo = data.prefix(2) as Data?,
+           firstTwo.count == 2 && firstTwo[0] == 0x50 && firstTwo[1] == 0x4B {
+            filename = conversionOutputFilename(sourceBaseName: baseName, targetExtension: "zip")
+        }
 
         return ConversionView.ConversionResult(
             success: true,
@@ -1003,6 +1009,56 @@ func conversionConvertToPDF(content: String, title: String) -> Data? {
     return renderer.pdfData { context in
         context.beginPage()
         attributed.draw(with: contentRect, options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+    }
+}
+
+private func conversionConvertPDFToJPG(document: Document, documentManager: DocumentManager) -> Data? {
+    let rawData = documentManager.pdfData(for: document.id) ?? document.pdfData ?? document.originalFileData
+    guard let pdfData = rawData, let pdf = PDFDocument(data: pdfData), pdf.pageCount > 0 else { return nil }
+
+    let renderScale: CGFloat = 2.0
+    var jpegPages: [(String, Data)] = []
+    for idx in 0..<pdf.pageCount {
+        guard let page = pdf.page(at: idx) else { continue }
+        let pageRect = page.bounds(for: .mediaBox)
+        let imageSize = CGSize(width: max(1, pageRect.width * renderScale), height: max(1, pageRect.height * renderScale))
+        let renderer = UIGraphicsImageRenderer(size: imageSize)
+        let image = renderer.image { ctx in
+            UIColor.white.set()
+            ctx.fill(CGRect(origin: .zero, size: imageSize))
+            ctx.cgContext.saveGState()
+            ctx.cgContext.translateBy(x: 0, y: imageSize.height)
+            ctx.cgContext.scaleBy(x: renderScale, y: -renderScale)
+            page.draw(with: .mediaBox, to: ctx.cgContext)
+            ctx.cgContext.restoreGState()
+        }
+        guard let jpegData = image.jpegData(compressionQuality: 0.92) else { continue }
+        jpegPages.append(("page_\(idx + 1).jpg", jpegData))
+    }
+
+    guard !jpegPages.isEmpty else { return nil }
+
+    // Single page: return the JPG directly
+    if jpegPages.count == 1 { return jpegPages[0].1 }
+
+    // Multi-page: zip all JPGs
+    let tempRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    do {
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        for (name, data) in jpegPages {
+            try data.write(to: tempRoot.appendingPathComponent(name))
+        }
+        let zipURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".zip")
+        let success = SSZipArchive.createZipFile(atPath: zipURL.path, withContentsOfDirectory: tempRoot.path)
+        try FileManager.default.removeItem(at: tempRoot)
+        guard success else { return nil }
+        let zipData = try Data(contentsOf: zipURL)
+        try FileManager.default.removeItem(at: zipURL)
+        return zipData
+    } catch {
+        AppLogger.conversion.error("PDF to JPG zip failed: \(error.localizedDescription)")
+        try? FileManager.default.removeItem(at: tempRoot)
+        return nil
     }
 }
 

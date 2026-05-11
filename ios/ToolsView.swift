@@ -2889,13 +2889,19 @@ private struct CropScrollPDFRepresentable: UIViewRepresentable {
             pdfView.layoutDocumentView()
         }
 
+        if isCropMode && !context.coordinator.isCropMode {
+            // Lock the crop target to the page visible when entering crop mode
+            context.coordinator.lockedPageIndex = currentPageIndex
+            context.coordinator.startTrackingOverlay(in: uiView)
+        } else if !isCropMode && context.coordinator.isCropMode {
+            context.coordinator.stopTrackingOverlay()
+        }
+        context.coordinator.isCropMode = isCropMode
+
         if isCropMode {
-            // Add overlay if not present
-            let overlay: CropOverlayView
-            if let existing = context.coordinator.cropOverlay {
-                overlay = existing
-            } else {
-                overlay = CropOverlayView()
+            // Ensure overlay exists
+            if context.coordinator.cropOverlay == nil {
+                let overlay = CropOverlayView()
                 overlay.translatesAutoresizingMaskIntoConstraints = false
                 uiView.addSubview(overlay)
                 NSLayoutConstraint.activate([
@@ -2906,10 +2912,7 @@ private struct CropScrollPDFRepresentable: UIViewRepresentable {
                 ])
                 context.coordinator.cropOverlay = overlay
             }
-            // Sync current page frame and crop values into overlay
-            if let page = pdfView.currentPage {
-                overlay.pageFrame = pdfView.convert(page.bounds(for: .cropBox), from: page)
-            }
+            let overlay = context.coordinator.cropOverlay!
             overlay.cropValues = cropValues
             overlay.onCropChanged = { newValues in
                 context.coordinator.parent.cropValues = newValues
@@ -2926,19 +2929,45 @@ private struct CropScrollPDFRepresentable: UIViewRepresentable {
         weak var pdfView: PDFView?
         var cropOverlay: CropOverlayView?
         var lastRefreshTrigger = 0
+        var isCropMode = false
+        var lockedPageIndex: Int = 0
+        private var displayLink: CADisplayLink?
+
         init(_ parent: CropScrollPDFRepresentable) { self.parent = parent }
 
+        func startTrackingOverlay(in container: UIView) {
+            displayLink?.invalidate()
+            let link = CADisplayLink(target: self, selector: #selector(updateOverlayFrame))
+            link.add(to: .main, forMode: .common)
+            displayLink = link
+        }
+
+        func stopTrackingOverlay() {
+            displayLink?.invalidate()
+            displayLink = nil
+        }
+
+        @objc func updateOverlayFrame() {
+            guard let pdfView = pdfView,
+                  let doc = pdfView.document,
+                  let page = doc.page(at: lockedPageIndex),
+                  let overlay = cropOverlay else { return }
+            // pdfView and overlay share the same coordinate space (both fill the container)
+            let frame = pdfView.convert(page.bounds(for: .cropBox), from: page)
+            if frame != overlay.pageFrame {
+                overlay.pageFrame = frame
+                overlay.setNeedsDisplay()
+            }
+        }
+
         @objc func pageChanged(_ notification: Notification) {
-            guard let pdfView = notification.object as? PDFView,
+            guard !isCropMode,
+                  let pdfView = notification.object as? PDFView,
                   let currentPage = pdfView.currentPage,
                   let doc = pdfView.document else { return }
             let index = doc.index(for: currentPage)
             DispatchQueue.main.async {
                 self.parent.currentPageIndex = index
-                if let overlay = self.cropOverlay {
-                    overlay.pageFrame = pdfView.convert(currentPage.bounds(for: .cropBox), from: currentPage)
-                    overlay.setNeedsDisplay()
-                }
             }
         }
     }

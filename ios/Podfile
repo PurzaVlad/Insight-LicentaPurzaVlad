@@ -57,6 +57,13 @@ target 'Insight' do
       target.build_configurations.each do |config|
         config.build_settings['CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES'] = 'YES'
         config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = min_ios_version
+        # Workaround for fmt + AppleClang consteval evaluation errors on Xcode.
+        defs = config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] || ['$(inherited)']
+        defs = [defs] unless defs.is_a?(Array)
+        unless defs.include?('FMT_USE_CONSTEVAL=0')
+          defs << 'FMT_USE_CONSTEVAL=0'
+        end
+        config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] = defs
       end
 
       # Some local pod states miss Public/glog header links; ensure Folly can
@@ -70,6 +77,37 @@ target 'Insight' do
           config.build_settings['HEADER_SEARCH_PATHS'] = header_paths
         end
       end
+
+      # fmt triggers consteval errors with newer AppleClang in C++20 mode.
+      # Keep this pod on C++17 to avoid broken compile-time format checks path.
+      if target.name == 'fmt'
+        target.build_configurations.each do |config|
+          config.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++17'
+        end
+      end
+    end
+
+    # CocoaPods writes c++20 into fmt.*.xcconfig; patch those files directly
+    # so the setting survives and actually takes effect during build.
+    ['debug', 'release'].each do |cfg|
+      xcconfig_path = File.join(
+        installer.sandbox.root.to_s,
+        'Target Support Files',
+        'fmt',
+        "fmt.#{cfg}.xcconfig"
+      )
+      next unless File.exist?(xcconfig_path)
+
+      content = File.read(xcconfig_path)
+      content = content.gsub('CLANG_CXX_LANGUAGE_STANDARD = c++20',
+                             'CLANG_CXX_LANGUAGE_STANDARD = gnu++17')
+      unless content.include?('FMT_USE_NONTYPE_TEMPLATE_ARGS=0')
+        content = content.gsub(
+          'GCC_PREPROCESSOR_DEFINITIONS = $(inherited) COCOAPODS=1',
+          'GCC_PREPROCESSOR_DEFINITIONS = $(inherited) COCOAPODS=1 FMT_USE_NONTYPE_TEMPLATE_ARGS=0 FMT_USE_CONSTEVAL=0'
+        )
+      end
+      File.write(xcconfig_path, content)
     end
   end
 end
