@@ -18,6 +18,7 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
     let imageData: [Data]?
     let pdfData: Data?
     let originalFileData: Data?
+    let sensitiveFlags: [SensitiveDataFlag]
 
     enum DocumentCategory: String, CaseIterable, Codable {
         case general = "General"
@@ -34,6 +35,21 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         case scanned
         case text
         case zip
+
+        var displayName: String {
+            switch self {
+            case .pdf:    return "PDF"
+            case .docx:   return "DOCX"
+            case .ppt:    return "PPT"
+            case .pptx:   return "PPTX"
+            case .xls:    return "XLS"
+            case .xlsx:   return "XLSX"
+            case .image:  return "Image"
+            case .scanned: return "Scanned PDF"
+            case .text:   return "Text"
+            case .zip:    return "ZIP"
+            }
+        }
     }
 
     init(
@@ -53,7 +69,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         type: DocumentType,
         imageData: [Data]?,
         pdfData: Data?,
-        originalFileData: Data? = nil
+        originalFileData: Data? = nil,
+        sensitiveFlags: [SensitiveDataFlag] = []
     ) {
         self.id = id
         self.title = title
@@ -77,6 +94,7 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         self.imageData = imageData
         self.pdfData = pdfData
         self.originalFileData = originalFileData
+        self.sensitiveFlags = sensitiveFlags
     }
 
     enum CodingKeys: String, CodingKey {
@@ -97,6 +115,7 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         case imageData
         case pdfData
         case originalFileData
+        case sensitiveFlags
     }
 
     init(from decoder: Decoder) throws {
@@ -124,6 +143,7 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         imageData = try container.decodeIfPresent([Data].self, forKey: .imageData)
         pdfData = try container.decodeIfPresent(Data.self, forKey: .pdfData)
         originalFileData = try container.decodeIfPresent(Data.self, forKey: .originalFileData)
+        sensitiveFlags = (try? container.decodeIfPresent([SensitiveDataFlag].self, forKey: .sensitiveFlags)) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -142,6 +162,9 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         try container.encodeIfPresent(folderId, forKey: .folderId)
         try container.encode(sortOrder, forKey: .sortOrder)
         try container.encode(type, forKey: .type)
+        if !sensitiveFlags.isEmpty {
+            try container.encode(sensitiveFlags, forKey: .sensitiveFlags)
+        }
         // Binary data is stored on disk via FileStorageService, not in JSON
     }
 
@@ -306,7 +329,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: type,
-            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData
+            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
+            sensitiveFlags: sensitiveFlags
         )
     }
 
@@ -316,7 +340,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: type,
-            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData
+            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
+            sensitiveFlags: sensitiveFlags
         )
     }
 
@@ -326,7 +351,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: type,
-            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData
+            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
+            sensitiveFlags: sensitiveFlags
         )
     }
 
@@ -336,7 +362,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: type,
-            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData
+            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
+            sensitiveFlags: sensitiveFlags
         )
     }
 
@@ -346,7 +373,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: type,
-            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData
+            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
+            sensitiveFlags: sensitiveFlags
         )
     }
 
@@ -356,7 +384,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: type,
-            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData
+            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
+            sensitiveFlags: sensitiveFlags
         )
     }
 
@@ -366,7 +395,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: type,
-            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData
+            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
+            sensitiveFlags: sensitiveFlags
         )
     }
 
@@ -376,7 +406,30 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: type,
-            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData
+            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
+            sensitiveFlags: sensitiveFlags
+        )
+    }
+
+    func with(documentType newType: DocumentType) -> Document {
+        Document(
+            id: id, title: title, content: content, summary: summary,
+            ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
+            tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
+            folderId: folderId, sortOrder: sortOrder, type: newType,
+            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
+            sensitiveFlags: sensitiveFlags
+        )
+    }
+
+    func with(sensitiveFlags: [SensitiveDataFlag]) -> Document {
+        Document(
+            id: id, title: title, content: content, summary: summary,
+            ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
+            tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
+            folderId: folderId, sortOrder: sortOrder, type: type,
+            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
+            sensitiveFlags: sensitiveFlags
         )
     }
 
@@ -387,7 +440,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: type,
-            imageData: nil, pdfData: nil, originalFileData: nil
+            imageData: nil, pdfData: nil, originalFileData: nil,
+            sensitiveFlags: sensitiveFlags
         )
     }
 }

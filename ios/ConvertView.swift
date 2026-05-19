@@ -1176,37 +1176,67 @@ private func convertViaServer(
 
     request.httpBody = inputData
 
-    let task = _convertViewPinnedSession.dataTask(with: request) { data, response, error in
-        defer { semaphore.signal() }
-        if let error {
-            AppLogger.conversion.error("convertViaServer: network error — \(error)")
-            errorMessage = error.localizedDescription
-            return
+    let maxRetries = 2
+    let retryDelays: [TimeInterval] = [2.0, 4.0]
+    var shouldRetry = false
+
+    for attempt in 0...maxRetries {
+        if attempt > 0 {
+            Thread.sleep(forTimeInterval: retryDelays[attempt - 1])
+            AppLogger.conversion.debug("convertViaServer: retry attempt \(attempt)")
         }
-        guard let http = response as? HTTPURLResponse else {
-            AppLogger.conversion.error("convertViaServer: response is not HTTPURLResponse")
-            errorMessage = "No response from server."
-            return
-        }
-        AppLogger.conversion.debug("convertViaServer: HTTP \(http.statusCode)")
-        if http.statusCode == 200 {
-            resultData = data
-            if let headerValue = http.allHeaderFields.first(where: { key, _ in
-                String(describing: key).lowercased() == "content-disposition"
-            })?.value as? String {
-                responseFilename = ContentDisposition.filename(from: headerValue)
+
+        resultData = nil
+        errorMessage = nil
+        responseFilename = nil
+        shouldRetry = false
+
+        let semaphore = DispatchSemaphore(value: 0)
+        let task = _convertViewPinnedSession.dataTask(with: request) { data, response, error in
+            defer { semaphore.signal() }
+            if let error {
+                AppLogger.conversion.error("convertViaServer: network error — \(error)")
+                errorMessage = error.localizedDescription
+                return
             }
-            return
+            guard let http = response as? HTTPURLResponse else {
+                AppLogger.conversion.error("convertViaServer: response is not HTTPURLResponse")
+                errorMessage = "No response from server."
+                return
+            }
+            AppLogger.conversion.debug("convertViaServer: HTTP \(http.statusCode)")
+            if http.statusCode == 200 {
+                resultData = data
+                if let headerValue = http.allHeaderFields.first(where: { key, _ in
+                    String(describing: key).lowercased() == "content-disposition"
+                })?.value as? String {
+                    responseFilename = ContentDisposition.filename(from: headerValue)
+                }
+                return
+            }
+            if http.statusCode == 503 && attempt < maxRetries {
+                AppLogger.conversion.debug("convertViaServer: 503 — will retry (attempt \(attempt))")
+                shouldRetry = true
+                return
+            }
+            if let data, data.isEmpty == false, let text = String(data: data, encoding: .utf8) {
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let lower = trimmed.lowercased()
+                if lower.hasPrefix("<html") || lower.hasPrefix("<!doctype") {
+                    errorMessage = "Server error (\(http.statusCode)). Please try again later."
+                } else {
+                    errorMessage = trimmed
+                }
+                return
+            }
+            errorMessage = "Server error (HTTP \(http.statusCode))."
         }
-        if let data, data.isEmpty == false, let text = String(data: data, encoding: .utf8) {
-            errorMessage = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return
-        }
-        errorMessage = "Server error (HTTP \(http.statusCode))."
+        task.resume()
+        _ = semaphore.wait(timeout: .now() + 180)
+        AppLogger.conversion.debug("convertViaServer: semaphore released — resultData=\(resultData != nil) errorMessage=\(errorMessage ?? "nil")")
+
+        if !shouldRetry { break }
     }
-    task.resume()
-    _ = semaphore.wait(timeout: .now() + 180)
-    AppLogger.conversion.debug("convertViaServer: semaphore released — resultData=\(resultData != nil) errorMessage=\(errorMessage ?? "nil")")
 
     if resultData == nil && errorMessage == nil {
         errorMessage = "No response from server (timeout or network issue)."

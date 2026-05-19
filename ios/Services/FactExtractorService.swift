@@ -18,9 +18,7 @@ struct ExtractedFacts {
 /// Runs before LLM summarization to guarantee representative content appears in the prompt.
 enum FactExtractorService {
 
-    private static let maxFacts = 8
-
-    static func extract(from text: String) -> ExtractedFacts {
+    static func extract(from text: String, maxFacts: Int = 8) -> ExtractedFacts {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return ExtractedFacts(facts: [])
         }

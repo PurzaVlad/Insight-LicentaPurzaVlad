@@ -16,7 +16,7 @@ class EdgeAI: RCTEventEmitter {
     override static func requiresMainQueueSetup() -> Bool { true }
 
     override func supportedEvents() -> [String]! {
-        return ["EdgeAIRequest", "EdgeAICancel"]
+        return ["EdgeAIRequest", "EdgeAICancel", "ModelConsentGranted"]
     }
 
     override func startObserving() {
@@ -86,6 +86,12 @@ class EdgeAI: RCTEventEmitter {
         DispatchQueue.main.async { [weak self] in
             self?.sendEvent(withName: "EdgeAICancel", body: [:])
         }
+    }
+
+    @objc func getModelConsentState(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+        let consented = UserDefaults.standard.bool(forKey: "modelDownloadConsented")
+        let declined = UserDefaults.standard.bool(forKey: "modelDownloadDeclined")
+        resolve(["consented": consented, "declined": declined])
     }
 
     @objc(setModelReady:)

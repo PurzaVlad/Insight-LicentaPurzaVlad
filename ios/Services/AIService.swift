@@ -121,12 +121,12 @@ class AIService {
     func buildSummaryPrompt(for document: Document, length: SummaryLength = .medium) -> String {
         let factLimit: Int
         switch length {
-        case .short:  factLimit = 3
-        case .medium: factLimit = 10
-        case .long:   factLimit = 20
+        case .short:  factLimit = 4
+        case .medium: factLimit = 8
+        case .long:   factLimit = 16
         }
-        let facts = FactExtractorService.extract(from: fullDocumentText(for: document))
-        let limitedFacts = Array(facts.facts.prefix(factLimit))
+        let facts = FactExtractorService.extract(from: fullDocumentText(for: document), maxFacts: factLimit)
+        let limitedFacts = facts.facts
         let targetTok = targetTokens(factCount: limitedFacts.count, length: length)
 
         let docType = validatedDocType(document.keywordsResume)
@@ -158,21 +158,21 @@ class AIService {
     private func targetTokens(factCount: Int, length: SummaryLength) -> Int {
         switch length {
         case .short:  return 110
-        case .medium: return max(100, min(320, factCount * 25 + 40))
-        case .long:   return max(120, min(700, factCount * 35 + 80))
+        case .medium: return max(120, min(320, factCount * 28 + 50))
+        case .long:   return max(350, min(700, factCount * 30 + 200))
         }
     }
 
     private func buildSummarySystemPrompt(length: SummaryLength, docType: String, factCount: Int) -> String {
-        let typeHint = docType.isEmpty ? "" : " Document type: \(docType)"
+        let typeHint = docType.isEmpty ? "" : " Document type: \(docType)."
         switch length {
         case .short:
-            let lowOCRHint = factCount < 2 ? " If the document content is unclear or unreadable, state that briefly." : ""
-            return "In 1-3 plain sentences, explain what this document is and what it covers. Only state what is clearly present — do not infer. No preamble. No markdown. No labels.\(typeHint)\(lowOCRHint)"
+            let lowOCRHint = factCount < 2 ? " If the content is unclear or unreadable, state that briefly." : ""
+            return "Write 2 plain sentences: first, what type of document this is and who or what it concerns; second, what it specifically covers or establishes. State only what is shown. No preamble, no markdown, no bullets.\(typeHint)\(lowOCRHint)"
         case .medium:
-            return "Write a bullet list of the document's key points using `- ` (dash) for each bullet. Each bullet must be a clear statement based only on what the document content shows. No intro sentence. No conclusion. No inferences."
+            return "List 4-6 of the document's most important points as bullet items. Start each with `- `. Each bullet is one clear statement under 20 words. Include key facts, figures, names, or decisions. No intro line, no closing line, no inferences.\(typeHint)"
         case .long:
-            return "Write a thorough summary. Start with one sentence about this document's purpose. Then use `## ` headings for each main topic, followed by 1-2 sentences explaining what the document states about that topic. Use `- ` (dash) for any sub-lists. Use `bold` for key terms. Stay close to what is written — do not add inferences.\(typeHint)"
+            return "Write a thorough summary. Open with one sentence stating the document's purpose. Then write 3-5 `## ` sections for the document's main topics, with 1-2 sentences under each. Bold key terms with `**term**`. State only what the document contains — no inferences.\(typeHint)"
         }
     }
 
@@ -348,7 +348,7 @@ class AIService {
     /// Builds a keyword prompt that identifies the document archetype (type, not topic).
     /// Uses the KEYWORD_REQUEST marker so JS routes it through a dedicated low-temperature,
     /// single-line generation path with the few-shot system prompt in JS.
-    func buildKeywordPrompt(for document: Document) -> String {
+    func buildKeywordPrompt(for document: Document, existingKeywords: [String] = []) -> String {
         let titleAnchor: String = {
             let base = document.title
             if let dotRange = base.range(of: ".", options: .backwards) {
@@ -361,7 +361,61 @@ class AIService {
         let briefContent = rawContent.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200)
         let contentHint = briefContent.isEmpty ? "" : "\nContent: \(briefContent)"
 
-        return "<<<KEYWORD_REQUEST>>>\nTitle: \(titleAnchor)\(contentHint)"
+        var prompt = "<<<KEYWORD_REQUEST>>>\nTitle: \(titleAnchor)\(contentHint)"
+        if !existingKeywords.isEmpty {
+            let list = existingKeywords.prefix(30).joined(separator: ", ")
+            prompt += "\nExisting categories (reuse one exactly if it matches): \(list)"
+        }
+        return prompt
+    }
+
+    /// Normalizes a keyword against existing ones using exact, prefix, and Levenshtein matching.
+    /// Returns the existing keyword if close enough, otherwise the original.
+    func normalizeKeyword(_ keyword: String, against existing: [String]) -> String {
+        guard !existing.isEmpty else { return keyword }
+
+        let lowered = keyword.lowercased().replacingOccurrences(of: " ", with: "")
+
+        for candidate in existing {
+            let candLowered = candidate.lowercased().replacingOccurrences(of: " ", with: "")
+
+            // Exact match
+            if candLowered == lowered { return candidate }
+
+            // Shared-prefix rule: prefix >= 70% of shorter word (min 5 chars)
+            let minLen = min(lowered.count, candLowered.count)
+            if minLen >= 5 {
+                let sharedPrefix = zip(lowered, candLowered).prefix(while: { $0 == $1 }).count
+                let prefixThreshold = Int(ceil(Double(minLen) * 0.7))
+                if sharedPrefix >= prefixThreshold { return candidate }
+            }
+
+            // Normalized Levenshtein <= 0.30
+            let maxLen = max(lowered.count, candLowered.count)
+            if maxLen > 0 {
+                let dist = levenshtein(lowered, candLowered)
+                if Double(dist) / Double(maxLen) <= 0.30 { return candidate }
+            }
+        }
+
+        return keyword
+    }
+
+    private func levenshtein(_ a: String, _ b: String) -> Int {
+        let a = Array(a), b = Array(b)
+        guard !a.isEmpty else { return b.count }
+        guard !b.isEmpty else { return a.count }
+        var dp = Array(0...b.count)
+        for i in 1...a.count {
+            var prev = dp[0]
+            dp[0] = i
+            for j in 1...b.count {
+                let temp = dp[j]
+                dp[j] = a[i-1] == b[j-1] ? prev : min(prev, min(dp[j], dp[j-1])) + 1
+                prev = temp
+            }
+        }
+        return dp[b.count]
     }
 
     /// Returns the stored keyword/sentence if it looks like real content (not a template artifact).

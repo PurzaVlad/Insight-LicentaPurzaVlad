@@ -994,7 +994,7 @@ struct DocumentPreviewContainerView: View {
         .simultaneousGesture(edgeSwipeToDismiss)
         .sheet(isPresented: $showingInfo) {
             if let doc = document, let manager = documentManager {
-                DocumentInfoView(document: doc, fileURL: url)
+                DocumentInsightsView(document: doc, fileURL: url)
                     .environmentObject(manager)
             }
         }
@@ -1384,6 +1384,176 @@ private extension View {
     @ViewBuilder
     func applySquareSheetCorners() -> some View {
         self.presentationCornerRadius(0)
+    }
+}
+
+// MARK: - Document Insights View
+struct DocumentInsightsView: View {
+    let document: Document
+    let fileURL: URL
+    @EnvironmentObject private var documentManager: DocumentManager
+    @Environment(\.dismiss) private var dismiss
+
+    private var relatedDocuments: [Document] {
+        let myTags = Set(document.tags.map { $0.lowercased() })
+        let myKeyword = document.keywordsResume.lowercased().trimmingCharacters(in: .whitespaces)
+        return documentManager.documents
+            .filter { $0.id != document.id }
+            .compactMap { other -> (Document, Int)? in
+                var score = myTags.intersection(Set(other.tags.map { $0.lowercased() })).count * 2
+                let otherKW = other.keywordsResume.lowercased().trimmingCharacters(in: .whitespaces)
+                if !myKeyword.isEmpty && myKeyword == otherKW { score += 1 }
+                return score > 0 ? (other, score) : nil
+            }
+            .sorted { $0.1 > $1.1 }
+            .prefix(3)
+            .map { $0.0 }
+    }
+
+    var body: some View {
+        NavigationView {
+            List {
+                Section {
+                    HStack(spacing: 14) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(typeColor(document.type).opacity(0.12))
+                                .frame(width: 46, height: 46)
+                            Image(systemName: iconForDocumentType(document.type))
+                                .font(.system(size: 21, weight: .medium))
+                                .foregroundColor(typeColor(document.type))
+                        }
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(fileTypeLabel(documentType: document.type, titleParts: splitDisplayTitle(document.title)))
+                                .font(.headline)
+                            if !document.keywordsResume.isEmpty {
+                                Text(document.keywordsResume)
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        Spacer()
+                    }
+                    .padding(.vertical, 6)
+                }
+
+                if !document.tags.isEmpty {
+                    Section("Tags") {
+                        LazyVGrid(
+                            columns: [GridItem(.flexible()), GridItem(.flexible())],
+                            spacing: 8
+                        ) {
+                            ForEach(document.tags, id: \.self) { tag in
+                                Text(tag)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .lineLimit(1)
+                                    .foregroundColor(Color("Primary"))
+                                    .frame(maxWidth: .infinity, minHeight: 36, maxHeight: 36)
+                                    .background(Color("Primary").opacity(0.1))
+                                    .cornerRadius(14)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 14)
+                                            .stroke(Color("Primary").opacity(0.25), lineWidth: 1)
+                                    )
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+
+                if !relatedDocuments.isEmpty {
+                    Section("Related Documents") {
+                        ForEach(relatedDocuments) { related in
+                            HStack(spacing: 12) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(typeColor(related.type).opacity(0.12))
+                                        .frame(width: 34, height: 34)
+                                    Image(systemName: iconForDocumentType(related.type))
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundColor(typeColor(related.type))
+                                }
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(splitDisplayTitle(related.title).base)
+                                        .font(.subheadline)
+                                        .lineLimit(1)
+                                    if !related.keywordsResume.isEmpty {
+                                        Text(related.keywordsResume)
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Section("File Info") {
+                    insightRow("Name", splitDisplayTitle(document.title).base)
+                    insightRow("Size", formattedSize)
+                    insightRow("Date Added", dateAdded)
+                    insightRow("Extension", fileExt)
+                    insightRow("Source", sourceLabel)
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("Insights")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button { dismiss() } label: {
+                        Label("Back", systemImage: "chevron.backward")
+                    }
+                }
+            }
+        }
+    }
+
+    private func insightRow(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label).foregroundColor(.secondary)
+            Spacer()
+            Text(value).multilineTextAlignment(.trailing)
+        }
+    }
+
+    private func typeColor(_ type: Document.DocumentType) -> Color {
+        switch type {
+        case .pdf:        return .red
+        case .docx:       return .blue
+        case .ppt, .pptx: return .orange
+        case .xls, .xlsx: return .green
+        case .image:      return .purple
+        case .scanned:    return .teal
+        case .text:       return .gray
+        case .zip:        return Color(.brown)
+        }
+    }
+
+    private var sourceLabel: String {
+        document.type == .scanned ? "Scanned" : "Imported"
+    }
+
+    private var fileExt: String {
+        let ext = fileURL.pathExtension.lowercased()
+        return ext.isEmpty ? fileExtension(for: document.type) : ext
+    }
+
+    private var formattedSize: String {
+        let bytes: Int = {
+            if let d = documentManager.originalFileData(for: document.id) { return d.count }
+            if let d = documentManager.pdfData(for: document.id) { return d.count }
+            if let imgs = documentManager.imageData(for: document.id) { return imgs.reduce(0) { $0 + $1.count } }
+            return document.content.utf8.count
+        }()
+        let f = ByteCountFormatter()
+        f.allowedUnits = [.useKB, .useMB, .useGB]
+        f.countStyle = .file
+        return f.string(fromByteCount: Int64(bytes))
+    }
+
+    private var dateAdded: String {
+        DateFormatter.localizedString(from: document.dateCreated, dateStyle: .medium, timeStyle: .short)
     }
 }
 

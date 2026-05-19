@@ -27,101 +27,86 @@ struct ZipExportView: View {
 
     var body: some View {
         NavigationView {
-            Group {
-                if launchedFromSelection {
-                    Color.clear
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+            List(selection: selectionBinding) {
+                if filteredItems.isEmpty {
+                    Text("No documents or folders available.")
+                        .foregroundColor(.secondary)
                 } else {
-                    List(selection: selectionBinding) {
-                        if filteredItems.isEmpty {
-                            Text("No documents or folders available.")
-                                .foregroundColor(.secondary)
-                        } else {
-                            ForEach(filteredItems) { item in
-                                switch item.kind {
-                                case .folder(let folder):
-                                    FolderRowView(
-                                        folder: folder,
-                                        docCount: documentManager.itemCount(in: folder.id),
-                                        isSelected: selectedFolderIds.contains(folder.id),
-                                        isSelectionMode: true,
-                                        usesNativeSelection: true,
-                                        onSelectToggle: {},
-                                        onOpen: {},
-                                        onRename: {},
-                                        onMove: {},
-                                        onDelete: {},
-                                        isDropTargeted: false
-                                    )
-                                    .tag(ZipSelectionID.folder(folder.id))
-                                    .listRowBackground(Color.clear)
-                                    .listRowSeparator(.hidden)
-                                    .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 16))
-                                case .document(let document):
-                                    DocumentRowView(
-                                        document: document,
-                                        isSelected: selectedDocumentIds.contains(document.id),
-                                        isSelectionMode: true,
-                                        usesNativeSelection: true,
-                                        onSelectToggle: {},
-                                        onOpen: {},
-                                        onRename: {},
-                                        onMoveToFolder: {},
-                                        onDelete: {},
-                                        onConvert: {},
-                                        onShare: {}
-                                    )
-                                    .tag(ZipSelectionID.document(document.id))
-                                    .listRowBackground(Color.clear)
-                                    .listRowSeparator(.hidden)
-                                    .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 16))
-                                }
-                            }
+                    ForEach(filteredItems) { item in
+                        switch item.kind {
+                        case .folder(let folder):
+                            FolderRowView(
+                                folder: folder,
+                                docCount: documentManager.itemCount(in: folder.id),
+                                isSelected: selectedFolderIds.contains(folder.id),
+                                isSelectionMode: true,
+                                usesNativeSelection: true,
+                                onSelectToggle: {},
+                                onOpen: {},
+                                onRename: {},
+                                onMove: {},
+                                onDelete: {},
+                                isDropTargeted: false
+                            )
+                            .tag(ZipSelectionID.folder(folder.id))
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 16))
+                        case .document(let document):
+                            DocumentRowView(
+                                document: document,
+                                isSelected: selectedDocumentIds.contains(document.id),
+                                isSelectionMode: true,
+                                usesNativeSelection: true,
+                                onSelectToggle: {},
+                                onOpen: {},
+                                onRename: {},
+                                onMoveToFolder: {},
+                                onDelete: {},
+                                onConvert: {},
+                                onShare: {}
+                            )
+                            .tag(ZipSelectionID.document(document.id))
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 16))
                         }
                     }
-                    .environment(\.editMode, $editMode)
-                    .listStyle(.plain)
-                    .hideScrollBackground()
-                    .scrollDismissesKeyboardIfAvailable()
-                    .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search documents")
                 }
             }
+            .environment(\.editMode, $editMode)
+            .listStyle(.plain)
+            .hideScrollBackground()
+            .scrollDismissesKeyboardIfAvailable()
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search documents")
             .navigationBarTitleDisplayMode(.inline)
-            .navigationTitle(launchedFromSelection ? "" : "Zip")
-            .toolbar(launchedFromSelection ? .hidden : .visible, for: .navigationBar)
+            .navigationTitle("Zip")
             .toolbar {
-                if !launchedFromSelection {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        Button("Cancel") { dismiss() }
-                            .foregroundColor(.primary)
-                    }
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button(isZipping ? "Zipping..." : "Create") {
-                            if zipName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                showingNamePrompt = true
-                            } else {
-                                createZip(named: zipName)
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Color("Primary"))
-                        .disabled(!canCreateZip)
-                    }
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        Button("Clear") {
-                            selectedFolderIds.removeAll()
-                            selectedDocumentIds.removeAll()
-                        }
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") { dismiss() }
                         .foregroundColor(.primary)
-                        .disabled(!canCreateZip)
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(isZipping ? "Zipping..." : "Create") {
+                        if zipName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            showingNamePrompt = true
+                        } else {
+                            createZip(named: zipName)
+                        }
                     }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color("Primary"))
+                    .disabled(!canCreateZip)
+                }
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Clear") {
+                        selectedFolderIds.removeAll()
+                        selectedDocumentIds.removeAll()
+                    }
+                    .foregroundColor(.primary)
+                    .disabled(!canCreateZip)
                 }
             }
-        }
-        .onAppear {
-            guard launchedFromSelection, !didAutoPromptName, canCreateZip else { return }
-            didAutoPromptName = true
-            showingNamePrompt = true
         }
         .alert("Create Zip", isPresented: $showingAlert) {
             Button("OK", role: .cancel) {}
@@ -139,11 +124,7 @@ struct ZipExportView: View {
                     createZip(named: trimmed)
                 }
             }
-            Button("Cancel", role: .cancel) {
-                if launchedFromSelection {
-                    dismiss()
-                }
-            }
+            Button("Cancel", role: .cancel) {}
         } message: {
             Text("Enter a name for the ZIP file.")
         }

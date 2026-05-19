@@ -10,6 +10,24 @@ struct LoginView: View {
     @State private var isLoading = false
     @State private var errorMessage: String? = nil
 
+    private static let specialChars = CharacterSet(charactersIn: "!@#$%^&*()_+-=[]{}|;':\",./<>?~`")
+
+    private func isValidEmail(_ email: String) -> Bool {
+        let parts = email.split(separator: "@", maxSplits: 1)
+        guard parts.count == 2, let domain = parts.last else { return false }
+        return !parts[0].isEmpty && domain.contains(".")
+    }
+
+    private func passwordValidationError(_ pwd: String) -> String? {
+        guard pwd.count >= 8 else { return "Password must be at least 8 characters." }
+        guard pwd.contains(where: { $0.isUppercase }) else { return "Password must contain at least one uppercase letter." }
+        guard pwd.contains(where: { $0.isNumber }) else { return "Password must contain at least one number." }
+        guard pwd.unicodeScalars.contains(where: { Self.specialChars.contains($0) }) else {
+            return "Password must contain at least one special character (!@#$%^&* etc.)."
+        }
+        return nil
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -107,8 +125,34 @@ struct LoginView: View {
                                 .shadow(color: .black.opacity(0.15), radius: 6, x: 0, y: 3)
                         }
                         .disabled(isLoading)
+
+                        Button {
+                            Task { await signInWithApple() }
+                        } label: {
+                            ZStack {
+                                Circle()
+                                    .fill(Color(.systemBackground))
+                                Image(systemName: "apple.logo")
+                                    .font(.system(size: 22, weight: .medium))
+                                    .foregroundStyle(Color(.label))
+                            }
+                            .frame(width: 48, height: 48)
+                            .shadow(color: .black.opacity(0.15), radius: 6, x: 0, y: 3)
+                        }
+                        .disabled(isLoading)
                     }
                     .padding(.horizontal)
+
+                    // MARK: Guest mode
+                    Button {
+                        authService.continueAsGuest()
+                    } label: {
+                        Text("Continue as Guest")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .disabled(isLoading)
+                    .padding(.bottom, 8)
                 }
                 .padding(.top, 12)
             }
@@ -129,13 +173,17 @@ struct LoginView: View {
             errorMessage = "Please enter your email and password."
             return
         }
+        guard isValidEmail(trimmedEmail) else {
+            errorMessage = "Please enter a valid email address."
+            return
+        }
         if isRegistering {
             guard trimmedPassword == confirmPassword else {
                 errorMessage = "Passwords do not match."
                 return
             }
-            guard trimmedPassword.count >= 6 else {
-                errorMessage = "Password must be at least 6 characters."
+            if let pwdError = passwordValidationError(trimmedPassword) {
+                errorMessage = pwdError
                 return
             }
         }
@@ -160,6 +208,21 @@ struct LoginView: View {
         errorMessage = nil
         do {
             try await authService.signInWithGoogle(presenting: root)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isLoading = false
+    }
+
+    private func signInWithApple() async {
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let window = scene.windows.first else { return }
+        isLoading = true
+        errorMessage = nil
+        do {
+            try await authService.signInWithApple(presenting: window)
+        } catch let error as AuthServiceError where error == .appleSignInCancelled {
+            // silent — user cancelled
         } catch {
             errorMessage = error.localizedDescription
         }

@@ -15,6 +15,9 @@ RCT_EXTERN_METHOD(rejectRequest:(NSString *)requestId
                   code:(NSString *)code
                   message:(NSString *)message)
 
+RCT_EXTERN_METHOD(getModelConsentState:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
 RCT_EXTERN_METHOD(setModelReady:(BOOL)ready)
 
 @end

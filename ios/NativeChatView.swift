@@ -109,11 +109,14 @@ struct NativeChatView: View {
         if isScopeActive, scopedDocuments.count == 1, let doc = scopedDocuments.first {
             return "You are helping the user understand \"\(doc.title)\". Read the passages and answer the question. Quote or paraphrase what the passages say — give a real answer even if partial."
         }
-        return "Read the passages and answer the question. State what the passages say about it — even a partial answer is better than nothing."
+        if !isScopeActive {
+            return "Read the passages from multiple documents and answer the question. Synthesize across sources and cite which document each piece of information comes from. If the user is continuing a conversation, keep prior context in mind."
+        }
+        return "Read the passages and answer the question. Give a direct, complete answer even if partial — and if you're following up on something mentioned earlier, refer to that context naturally."
     }
     private let historyLimit = 4
-    private let selectionMaxDocs = 2
-    private let activeContextCharBudget = 1600
+    private var selectionMaxDocs: Int { isScopeActive ? 2 : 5 }
+    private var activeContextCharBudget: Int { isScopeActive ? 2200 : 3200 }
     private let folderContextCharBudget = 500
     private let minContextReserveChars = 450
     private let maxSummaryCharsPerDoc = 420
@@ -235,7 +238,22 @@ struct NativeChatView: View {
                 if showing { loadConversationsFromDisk() }
             }
             .safeAreaInset(edge: .bottom) {
-                inputBar
+                VStack(spacing: 0) {
+                    if !isScopeActive && !documentManager.documents.isEmpty {
+                        HStack(spacing: 4) {
+                            Image(systemName: "doc.on.doc")
+                                .font(.caption2)
+                            Text("Asking all \(documentManager.documents.count) documents")
+                                .font(.caption2)
+                        }
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 20)
+                        .padding(.top, 6)
+                        .padding(.bottom, 2)
+                    }
+                    inputBar
+                }
             }
         }
     }
@@ -284,40 +302,49 @@ struct NativeChatView: View {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasText = !trimmed.isEmpty
 
-        return HStack(spacing: 12) {
-            scopeButton
+        return VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                scopeButton
 
-            HStack(alignment: .center, spacing: 6) {
-                TextField("Ask anything", text: $input, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 17))
-                    .lineLimit(1...6)
-                    .frame(minHeight: 24)
-                    .disabled(isGenerating)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, 12)
-                    .padding(.trailing, 6)
+                HStack(alignment: .center, spacing: 6) {
+                    TextField("Ask anything", text: $input, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 17))
+                        .lineLimit(1...6)
+                        .frame(minHeight: 24)
+                        .disabled(isGenerating)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.leading, 12)
+                        .padding(.trailing, 6)
 
-                Button {
-                    send()
-                } label: {
-                    Image(systemName: isGenerating ? "stop.fill" : "arrow.up")
-                        .font(.system(size: 16, weight: .semibold))
+                    Button {
+                        send()
+                    } label: {
+                        Image(systemName: isGenerating ? "stop.fill" : "arrow.up")
+                            .font(.system(size: 16, weight: .semibold))
+                    }
+                    .disabled(!hasText && !isGenerating)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .ifAvailableiOS17CircleBorder()
+                    .tint(Color("Primary"))
+                    .frame(width: 32, height: 32)
                 }
-                .disabled(!hasText && !isGenerating)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .ifAvailableiOS17CircleBorder()
-                .tint(Color("Primary"))
-                .frame(width: 32, height: 32)
+                .padding(.trailing, 6)
+                .padding(.vertical, 6)
+                .frame(minHeight: 44)
+                .ifAvailableiOS26GlassBackground(cornerRadius: inputCornerRadius)
             }
-            .padding(.trailing, 6)
-            .padding(.vertical, 6)
-            .frame(minHeight: 44)
-            .ifAvailableiOS26GlassBackground(cornerRadius: inputCornerRadius)
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 4)
+
+            Text("AI can make mistakes. Verify important information.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.bottom, 8)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
     }
 
     private func send() {
@@ -2063,17 +2090,31 @@ struct NativeChatView: View {
         selectedHits: [ChunkHit]
     ) -> String {
         let evidence = buildEvidenceFromSelectedHits(selectedHits, maxChars: activeContextCharBudget)
+        let historyBlock = buildConversationHistoryBlock()
 
         return """
         SYSTEM:
         \(chatPreprompt)
-
+        \(historyBlock)
         QUESTION:
         \(question)
 
         PASSAGES:
         \(evidence)
         """
+    }
+
+    private func buildConversationHistoryBlock() -> String {
+        let prior = messages.filter { $0.role == "user" || $0.role == "assistant" }
+        guard prior.count >= 2 else { return "" }
+        let turns = prior.suffix(8) // up to 4 user+assistant pairs
+        var lines = "\n\nCONVERSATION_HISTORY:\n"
+        for msg in turns {
+            let label = msg.role == "user" ? "User" : "Assistant"
+            let trimmed = String(msg.text.prefix(300))
+            lines += "\(label): \(trimmed)\n"
+        }
+        return lines
     }
 
     private func buildEvidenceFromSelectedHits(_ hits: [ChunkHit], maxChars: Int) -> String {
@@ -2444,9 +2485,9 @@ struct NativeChatView: View {
                 seenIds.insert(hit.document.id)
                 return hit.document
             }
-            topScoresToUse = Dictionary(
-                uniqueKeysWithValues: hitsToUse.map { ($0.document.id, max($0.finalScore, 0.0001)) }
-            )
+            topScoresToUse = hitsToUse.reduce(into: [:]) { result, hit in
+                result[hit.document.id] = max(result[hit.document.id] ?? 0, max(hit.finalScore, 0.0001))
+            }
         } else {
             return ChatLLMResult(reply: "Not specified in the documents.", primaryDocument: nil, rewrittenQuery: queryAnalysis?.rewrittenQuery)
         }
@@ -2534,7 +2575,14 @@ struct NativeChatView: View {
     }
 
     private func wrapChatPrompt(_ prompt: String) -> String {
-        let nPredictMarker = (isScopeActive && scopedDocuments.count == 1) ? "<<<N_PREDICT:300>>>" : ""
+        let nPredictMarker: String
+        if isScopeActive && scopedDocuments.count == 1 {
+            nPredictMarker = "<<<N_PREDICT:350>>>"
+        } else if isScopeActive {
+            nPredictMarker = "<<<N_PREDICT:250>>>"
+        } else {
+            nPredictMarker = "<<<N_PREDICT:220>>>"
+        }
         return "<<<CHAT_DETAIL>>>" + nPredictMarker + prompt
     }
 

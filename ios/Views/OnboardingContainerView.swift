@@ -5,16 +5,19 @@ struct OnboardingContainerView: View {
     @EnvironmentObject private var lockManager: LockManager
 
     @AppStorage("hasSeenWelcome") private var hasSeenWelcome = false
+    @AppStorage("hasSeenModelConsent") private var hasSeenModelConsent = false
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
 
     var body: some View {
         ZStack {
             if !hasSeenWelcome {
                 WelcomeView()
-            } else if !authService.isSignedIn {
+            } else if !hasSeenModelConsent {
+                ModelConsentView()
+            } else if !authService.isSignedIn && !authService.isGuestMode {
                 LoginView()
                     .environmentObject(authService)
-            } else {
+            } else if !authService.isGuestMode {
                 BiometricSetupView {
                     if let uid = authService.currentUserID {
                         UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding_\(uid)")

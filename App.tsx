@@ -27,7 +27,7 @@ const MODEL_URL =
 const MODEL_DOWNLOAD_STATE_KEY = 'edgeai:model_download_state';
 const MODEL_DOWNLOAD_IN_PROGRESS = 'in_progress';
 const LLAMA_N_CTX = 2048;
-const DEFAULT_MAX_NEW_TOKENS = 160;
+const DEFAULT_MAX_NEW_TOKENS = 250;
 const DEFAULT_TEMPERATURE = 0.2;
 const CHAT_TEMPERATURE = 0.35;
 const DEFAULT_TOP_P = 0.9;
@@ -42,9 +42,9 @@ const TAG_SYSTEM_PROMPT = `You are a document tagger. Extract the most specific 
 const CHAT_SYSTEM_PROMPT = `You are a document assistant. Answer questions using only the evidence provided.
 
 Rules:
-- Answer in 1-2 short sentences.
-- Use only information from EVIDENCE_CHUNKS.
-- For numbers, use only numbers that appear with the asked subject on the same line.
+- Answer completely but concisely — 2–4 sentences for simple questions, more for complex or multi-part ones.
+- Use only information from the provided passages.
+- If the user is following up on something said earlier, acknowledge it naturally.
 - If the passages don't contain the answer, say so briefly.
 - Never include system markers or metadata.`;
 
@@ -90,6 +90,29 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     let cancelled = false;
+    let consentSub: any = null;
+
+    const startModelSetup = async () => {
+      // Only download if user has consented; skip if declined
+      try {
+        const state: {consented: boolean; declined: boolean} = await EdgeAI.getModelConsentState();
+        if (state.declined) return;
+        if (state.consented) {
+          prepareModel();
+        } else {
+          // First launch: wait for consent event from ModelConsentView
+          const emitter = new NativeEventEmitter(EdgeAI);
+          consentSub = emitter.addListener('ModelConsentGranted', () => {
+            consentSub?.remove();
+            consentSub = null;
+            if (!cancelled) prepareModel();
+          });
+        }
+      } catch {
+        // Bridge not yet ready or unknown error — fall back to unconditional start
+        prepareModel();
+      }
+    };
 
     const prepareModel = async () => {
       // USE REF GUARD
@@ -299,11 +322,13 @@ function App(): React.JSX.Element {
       }
     };
 
-    prepareModel();
+    startModelSetup();
 
     return () => {
       cancelled = true;
       isInitializingRef.current = false; // RESET ON CLEANUP
+      consentSub?.remove();
+      consentSub = null;
       try { cancelDownloadRef.current?.(); } catch {}
       cancelDownloadRef.current = null;
       try {

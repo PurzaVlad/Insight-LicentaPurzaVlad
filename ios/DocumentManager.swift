@@ -67,6 +67,56 @@ class DocumentManager: ObservableObject {
         fileStorageService.clearAllCaches()
     }
 
+    /// Transfers all guest documents and file blobs to a newly signed-in user's namespace,
+    /// then configures the service for that user. Call this instead of `configureForUser`
+    /// when coming from guest mode and the user chose to keep their guest data.
+    func transferGuestData(toUserID newUID: String) {
+        let guestLoad = try? persistenceService.loadDocuments()
+        let guestConversations = (try? persistenceService.loadConversations()) ?? []
+
+        copyGuestFileBlobs(toUserID: newUID)
+
+        persistenceService.configure(userID: newUID)
+        fileStorageService.configure(userID: newUID)
+        fileStorageService.applyCurrentSecurityProfile()
+
+        if let result = guestLoad {
+            try? persistenceService.saveDocuments(
+                result.documents,
+                folders: result.folders,
+                prefersGridLayout: result.prefersGridLayout
+            )
+        }
+        if !guestConversations.isEmpty {
+            try? persistenceService.saveConversations(guestConversations)
+        }
+
+        loadDocuments()
+        lastAccessedMap = loadLastAccessedMap()
+        importSharedInboxIfNeeded()
+    }
+
+    private func copyGuestFileBlobs(toUserID newUID: String) {
+        let fm = FileManager.default
+        guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+        let guestDir = appSupport.appendingPathComponent("Insight/guest/DocumentFiles", isDirectory: true)
+        let newDir   = appSupport.appendingPathComponent("Insight/\(newUID)/DocumentFiles", isDirectory: true)
+        guard fm.fileExists(atPath: guestDir.path) else { return }
+        do {
+            if !fm.fileExists(atPath: newDir.path) {
+                try fm.createDirectory(at: newDir, withIntermediateDirectories: true, attributes: nil)
+            }
+            for item in try fm.contentsOfDirectory(at: guestDir, includingPropertiesForKeys: nil) {
+                let dest = newDir.appendingPathComponent(item.lastPathComponent)
+                if !fm.fileExists(atPath: dest.path) {
+                    try fm.copyItem(at: item, to: dest)
+                }
+            }
+        } catch {
+            AppLogger.documents.error("Failed to copy guest file blobs: \(error.localizedDescription)")
+        }
+    }
+
     func importSharedInboxIfNeeded() {
         guard persistenceService.userID != "anonymous" else { return }
         guard !isImportingSharedInbox else { return }
@@ -348,14 +398,21 @@ class DocumentManager: ObservableObject {
         if !force && !document.keywordsResume.isEmpty && aiService.isValidKeyword(document.keywordsResume) { return }
         guard let edgeAI = EdgeAI.shared else { return }
 
-        let prompt = aiService.buildKeywordPrompt(for: document)
+        let existingKeywords = Array(Set(
+            documents
+                .filter { $0.id != document.id && aiService.isValidKeyword($0.keywordsResume) }
+                .map { $0.keywordsResume }
+        )).sorted()
+
+        let prompt = aiService.buildKeywordPrompt(for: document, existingKeywords: existingKeywords)
 
         edgeAI.generate(prompt, resolver: { result in
             DispatchQueue.main.async {
                 let raw = result as? String ?? ""
-                let keyword = self.aiService.processKeyword(rawResponse: raw)
+                var keyword = self.aiService.processKeyword(rawResponse: raw)
                 AppLogger.ai.debug("Keyword raw='\(raw)' → processed='\(keyword)' for '\(document.title)'")
                 if !keyword.isEmpty {
+                    keyword = self.aiService.normalizeKeyword(keyword, against: existingKeywords)
                     self.updateKeywords(for: document.id, to: keyword)
                 } else {
                     AppLogger.ai.warning("Keyword empty after processing for '\(document.title)' — raw was: '\(raw)'")
@@ -701,6 +758,8 @@ class DocumentManager: ObservableObject {
                 ocrPages = buildPseudoOCRPages(from: content)
             }
 
+            let detectedFlags = Array(SensitiveDataDetector.detect(in: content))
+
             let baseDocument = Document(
                 id: docId,
                 title: url.lastPathComponent,
@@ -715,7 +774,8 @@ class DocumentManager: ObservableObject {
                 type: result.documentType,
                 imageData: result.imageData,
                 pdfData: result.pdfData,
-                originalFileData: result.originalFileData
+                originalFileData: result.originalFileData,
+                sensitiveFlags: detectedFlags
             )
 
             AppLogger.documents.info("Document created: '\(baseDocument.title)' (\(baseDocument.type.rawValue), \(baseDocument.content.count) chars)")
@@ -801,6 +861,7 @@ class DocumentManager: ObservableObject {
 
             backfillSortOrdersIfNeeded()
             backfillFolderSortOrdersIfNeeded()
+            backfillSensitiveDataIfNeeded()
 
             AppLogger.documents.info("Successfully loaded \(self.documents.count) documents + \(self.folders.count) folders")
 
@@ -885,8 +946,26 @@ class DocumentManager: ObservableObject {
         saveIndex()   // only folder sort orders changed — no per-doc writes needed
     }
     
+    private func backfillSensitiveDataIfNeeded() {
+        let key = "sensitiveDataScanVersion"
+        let currentVersion = 1
+        guard UserDefaults.standard.integer(forKey: key) < currentVersion else { return }
+
+        var changed = false
+        for i in documents.indices {
+            let doc = documents[i]
+            let flags = Array(SensitiveDataDetector.detect(in: doc.content))
+            if !flags.isEmpty {
+                documents[i] = doc.with(sensitiveFlags: flags)
+                changed = true
+            }
+        }
+        UserDefaults.standard.set(currentVersion, forKey: key)
+        if changed { saveState() }
+    }
+
     // MARK: - Search and Query
-    
+
     func searchDocuments(query: String) -> [Document] {
         let lowercaseQuery = query.lowercased()
         return documents.filter { document in

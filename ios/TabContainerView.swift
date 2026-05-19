@@ -93,8 +93,8 @@ struct TabContainerView: View {
     @StateObject private var lockManager: LockManager
     @StateObject private var summaryCoordinator: SummaryCoordinator
 
-    @State private var selectedTab: AppTab = .documents
-    @State private var lastNonSearchTab: AppTab = .documents
+    @State private var selectedTab: AppTab = .home
+    @State private var lastNonSearchTab: AppTab = .home
     @AppStorage("appTheme") private var appThemeRaw = AppTheme.system.rawValue
     @AppStorage("modelReady") private var modelReady = false
     @Environment(\.scenePhase) private var scenePhase
@@ -113,6 +113,8 @@ struct TabContainerView: View {
     @State private var operationLoadingSuccessToken: Int = 0
 
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
+    @State private var showGuestTransferPrompt = false
+    @State private var pendingNewUserID: String? = nil
 
     private struct PreviewItem: Identifiable {
         let id: UUID
@@ -121,7 +123,7 @@ struct TabContainerView: View {
     }
 
     private enum AppTab: Hashable {
-        case documents
+        case home
         case chat
         case tools
         case convert
@@ -182,19 +184,21 @@ struct TabContainerView: View {
                     .zIndex(10)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ModelDownloadDeclined"))) { _ in
+            finishInitialStartupLoadingIfNeeded()
+        }
         .onAppear {
             // Handle case where auth state is already restored before this view appears
             if authService.isSignedIn, let uid = authService.currentUserID {
-                documentManager.configureForUser(uid)
-                lockManager.configure(userID: uid)
-                hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding_\(uid)")
+                completeSignIn(uid: uid)
             }
             documentManager.importSharedInboxIfNeeded()
             let persistedModelReady = UserDefaults.standard.bool(forKey: "modelReady")
+            let downloadDeclined = UserDefaults.standard.bool(forKey: "modelDownloadDeclined")
             if modelReady != persistedModelReady {
                 modelReady = persistedModelReady
             }
-            if persistedModelReady {
+            if persistedModelReady || downloadDeclined {
                 finishInitialStartupLoadingIfNeeded()
             } else {
                 startInitialStartupLoadingIfNeeded()
@@ -234,17 +238,52 @@ struct TabContainerView: View {
         }
         .onChange(of: authService.isSignedIn) { isSignedIn in
             if isSignedIn, let uid = authService.currentUserID {
-                documentManager.configureForUser(uid)
-                lockManager.configure(userID: uid)
-                hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding_\(uid)")
-            } else {
+                if authService.pendingGuestTransfer {
+                    pendingNewUserID = uid
+                    showGuestTransferPrompt = true
+                } else {
+                    completeSignIn(uid: uid)
+                }
+            } else if !authService.isGuestMode {
                 documentManager.clearForSignOut()
                 lockManager.configure(userID: "")
                 hasCompletedOnboarding = false
             }
         }
+        .alert("Transfer Your Documents?", isPresented: $showGuestTransferPrompt) {
+            Button("Transfer Documents") {
+                if let uid = pendingNewUserID {
+                    documentManager.transferGuestData(toUserID: uid)
+                    lockManager.configure(userID: uid)
+                    hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding_\(uid)")
+                    authService.pendingGuestTransfer = false
+                    pendingNewUserID = nil
+                }
+            }
+            Button("Start Fresh") {
+                if let uid = pendingNewUserID {
+                    completeSignIn(uid: uid)
+                    authService.pendingGuestTransfer = false
+                    pendingNewUserID = nil
+                }
+            }
+        } message: {
+            Text("You added documents while browsing as a guest. Transfer them to your account, or start with a clean slate.")
+        }
+        .onChange(of: authService.isGuestMode) { isGuest in
+            if isGuest {
+                documentManager.configureForUser("guest")
+                lockManager.configure(userID: "")
+            } else if !authService.isSignedIn {
+                documentManager.clearForSignOut()
+            }
+        }
         .fullScreenCover(isPresented: Binding(
-            get: { authService.authStateLoaded && (!authService.isSignedIn || !hasCompletedOnboarding) },
+            get: {
+                guard authService.authStateLoaded else { return false }
+                if authService.isGuestMode { return false }
+                return !authService.isSignedIn || !hasCompletedOnboarding
+            },
             set: { _ in }
         )) {
             OnboardingContainerView()
@@ -302,8 +341,8 @@ struct TabContainerView: View {
         Group {
             if #available(iOS 18.0, *) {
                 TabView(selection: $selectedTab) {
-                    Tab(value: AppTab.documents) {
-                        DocumentsView(
+                    Tab(value: AppTab.home) {
+                        HomeDashboardView(
                             onOpenPreview: { document, url in
                                 previewItem = PreviewItem(id: document.id, url: url, document: document)
                             },
@@ -313,7 +352,7 @@ struct TabContainerView: View {
                         )
                         .environmentObject(documentManager)
                     } label: {
-                        Label("Documents", systemImage: "folder")
+                        Label("Home", systemImage: "house.fill")
                     }
 
                     Tab(value: AppTab.chat) {
@@ -367,7 +406,7 @@ struct TabContainerView: View {
                 .modifier(TabBarBackgroundModifier())
             } else {
                 TabView(selection: $selectedTab) {
-                    DocumentsView(
+                    HomeDashboardView(
                         onOpenPreview: { document, url in
                             previewItem = PreviewItem(id: document.id, url: url, document: document)
                         },
@@ -377,10 +416,10 @@ struct TabContainerView: View {
                     )
                     .environmentObject(documentManager)
                     .tabItem {
-                        Image(systemName: "folder")
-                        Text("Documents")
+                        Image(systemName: "house.fill")
+                        Text("Home")
                     }
-                    .tag(AppTab.documents)
+                    .tag(AppTab.home)
 
                     NativeChatView()
                         .environmentObject(documentManager)
@@ -510,10 +549,13 @@ struct TabContainerView: View {
                     guard !hasPassedStartupGate else { return }
                     guard isInitialStartupLoadingVisible else { return }
                     let persistedModelReady = UserDefaults.standard.bool(forKey: "modelReady")
+                    let downloadDeclined = UserDefaults.standard.bool(forKey: "modelDownloadDeclined")
                     if persistedModelReady {
                         if !modelReady {
                             modelReady = true
                         }
+                        finishInitialStartupLoadingIfNeeded()
+                    } else if downloadDeclined {
                         finishInitialStartupLoadingIfNeeded()
                     }
                 }
@@ -529,6 +571,12 @@ struct TabContainerView: View {
     }
 
     // MARK: - Operation Loading
+
+    private func completeSignIn(uid: String) {
+        documentManager.configureForUser(uid)
+        lockManager.configure(userID: uid)
+        hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding_\(uid)")
+    }
 
     private func updateOperationLoadingVisibility() {
         operationLoadingVisibilityToken += 1

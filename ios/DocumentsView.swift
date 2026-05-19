@@ -78,7 +78,7 @@ private extension View {
     }
 
     func tabBarHiddenCompat(_ isHidden: Bool) -> some View {
-        AnyView(self)
+        self.background(TabBarControllerAccessor(isHidden: isHidden))
     }
 
     func bottomBarVisibility(_ isVisible: Bool) -> some View {
@@ -86,17 +86,17 @@ private extension View {
     }
 }
 
-private enum DocumentLayoutMode {
+enum DocumentLayoutMode {
     case list
     case grid
 }
 
-private enum ScannerMode {
+enum ScannerMode {
     case document
     case simple
 }
 
-private enum DocumentsSortMode: String, CaseIterable {
+enum DocumentsSortMode: String, CaseIterable {
     case dateNewest = "newest"
     case dateOldest = "oldest"
     case nameAsc = "alphabetically"
@@ -170,6 +170,7 @@ struct DocumentsView: View {
     @EnvironmentObject private var documentManager: DocumentManager
     let onOpenPreview: (Document, URL) -> Void
     let onShowSummary: (Document) -> Void
+    var isEmbedded: Bool = false
     @State private var showingDocumentPicker = false
     @State private var showingScanner = false
     @State private var scannerMode: ScannerMode = .document
@@ -224,6 +225,9 @@ struct DocumentsView: View {
     @State private var protectedUnlockTarget: Document?
     @State private var protectedUnlockPassword = ""
     @State private var protectedUnlockError = ""
+    @State private var showingSmartViews = false
+    @State private var pendingSmartViewDocument: Document?
+    @State private var importBatchResult: ImportBatchResult?
     @AppStorage("documentsSortMode") private var documentsSortModeRaw = DocumentsSortMode.dateNewest.rawValue
 
     private var documentsSortMode: DocumentsSortMode {
@@ -627,8 +631,7 @@ struct DocumentsView: View {
             .disabled(!hasSelection)
             Spacer()
             Button {
-                quickZipName = ""
-                showingQuickZipNamePrompt = true
+                showingZipExportSheet = true
             } label: {
                 Label("Compress", systemImage: zipSymbolName())
             }
@@ -654,6 +657,18 @@ struct DocumentsView: View {
 
     @ToolbarContentBuilder
     private var documentsNormalToolbar: some ToolbarContent {
+        if !isEmbedded {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button {
+                    showingSmartViews = true
+                } label: {
+                    Image(systemName: "sparkles.rectangle.stack")
+                        .foregroundColor(.primary)
+                }
+                .accessibilityLabel("Smart Views")
+            }
+        }
+
         ToolbarItem(placement: .navigationBarTrailing) {
             Menu {
                 Button {
@@ -775,14 +790,25 @@ struct DocumentsView: View {
         .navigationBarTitleDisplayMode(.large)
     }
     
+    @ViewBuilder
+    private var documentsCoreContent: some View {
+        if isSelectionMode {
+            documentsBaseContent
+                .toolbar { documentsSelectionToolbar }
+        } else {
+            documentsBaseContent
+                .toolbar { documentsNormalToolbar }
+        }
+    }
+
     var body: some View {
-        NavigationStack(path: $navigationPath) {
-            if isSelectionMode {
-                documentsBaseContent
-                    .toolbar { documentsSelectionToolbar }
+        Group {
+            if isEmbedded {
+                documentsCoreContent
             } else {
-                documentsBaseContent
-                    .toolbar { documentsNormalToolbar }
+                NavigationStack(path: $navigationPath) {
+                    documentsCoreContent
+                }
             }
         }
         .tabBarVisibility(shouldHideTabBar)
@@ -793,6 +819,25 @@ struct DocumentsView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
                 .modifier(SettingsSheetBackgroundModifier())
+        }
+        .sheet(isPresented: $showingSmartViews) {
+            SmartViewsListView(
+                onOpenPreview: { doc, url in
+                    pendingSmartViewDocument = doc
+                    showingSmartViews = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        onOpenPreview(doc, url)
+                    }
+                },
+                onShowSummary: { doc in
+                    pendingSmartViewDocument = doc
+                    showingSmartViews = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        onShowSummary(doc)
+                    }
+                }
+            )
+            .environmentObject(documentManager)
         }
         .onChange(of: isSelectionMode) { active in
             editMode = active ? .active : .inactive
@@ -1018,7 +1063,8 @@ struct DocumentsView: View {
                         type: old.type,
                         imageData: old.imageData,
                         pdfData: old.pdfData,
-                        originalFileData: old.originalFileData
+                        originalFileData: old.originalFileData,
+                        sensitiveFlags: old.sensitiveFlags
                     )
                     documentManager.documents[idx] = updated
 
@@ -1067,10 +1113,14 @@ struct DocumentsView: View {
                 }
             )
         }
+        .sheet(item: $importBatchResult) { batch in
+            ImportReviewView(result: batch)
+                .environmentObject(documentManager)
+        }
     }
 
-    
-    
+
+
     // Menu actions
     private func renameDocument(_ document: Document) {
         documentToRename = document
@@ -1148,7 +1198,8 @@ struct DocumentsView: View {
                         type: document.type,
                         imageData: document.imageData,
                         pdfData: document.pdfData,
-                        originalFileData: document.originalFileData
+                        originalFileData: document.originalFileData,
+                        sensitiveFlags: document.sensitiveFlags
                     )
 
                     self.documentManager.addDocument(withFolder)
@@ -1176,7 +1227,8 @@ struct DocumentsView: View {
                                 type: current.type,
                                 imageData: current.imageData,
                                 pdfData: current.pdfData,
-                                originalFileData: current.originalFileData
+                                originalFileData: current.originalFileData,
+                                sensitiveFlags: current.sensitiveFlags
                             )
                             if let idx = self.documentManager.documents.firstIndex(where: { $0.id == current.id }) {
                                 self.documentManager.documents[idx] = updated
@@ -1186,6 +1238,9 @@ struct DocumentsView: View {
                 }
 
                 self.isProcessing = false
+                if !processedDocuments.isEmpty {
+                    self.importBatchResult = ImportBatchResult(documentIds: processedDocuments.map(\.id), importedAt: Date())
+                }
             }
         }
     }
@@ -2136,6 +2191,11 @@ struct DocumentRowView: View {
                         Text(dateText)
                         Text("•")
                         Text(typeText)
+                        if !document.sensitiveFlags.isEmpty {
+                            Image(systemName: "exclamationmark.shield.fill")
+                                .font(.system(size: 11))
+                                .foregroundColor(.orange)
+                        }
                     }
                     .font(.system(size: 13))
                     .foregroundColor(.secondary)
@@ -2167,12 +2227,11 @@ struct DocumentRowView: View {
         .contextMenu {
             Button(action: onShare) { Label("Share", systemImage: "square.and.arrow.up") }
             Button(action: onRename) { Label("Rename", systemImage: "pencil") }
-            Button(action: onMoveToFolder) { Label("Move to folder", systemImage: "folder") }
             Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
         }
         .onDrag { makeDocumentDragProvider(document.id) }
     }
-    
+
 }
 
 struct DocumentGridItemView: View {
@@ -2255,7 +2314,6 @@ struct DocumentGridItemView: View {
         .contextMenu {
             Button(action: onShare) { Label("Share", systemImage: "square.and.arrow.up") }
             Button(action: onRename) { Label("Rename", systemImage: "pencil") }
-            Button(action: onMoveToFolder) { Label("Move to folder", systemImage: "folder") }
             Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
         }
         .simultaneousGesture(
@@ -2440,7 +2498,7 @@ private struct FolderDropDelegate: DropDelegate {
     }
 }
 
-private struct SettingsSheetBackgroundModifier: ViewModifier {
+struct SettingsSheetBackgroundModifier: ViewModifier {
     func body(content: Content) -> some View {
         content.presentationBackground(.regularMaterial)
     }
@@ -2679,7 +2737,8 @@ struct FolderDocumentsView: View {
     @State private var showingNewFolderDialog = false
     @State private var newFolderName = ""
     @State private var dropTargetedFolderId: UUID? = nil
-    
+    @State private var importBatchResult: ImportBatchResult?
+
     init(
         folder: DocumentFolder,
         navigationPath: Binding<[DocumentFolder]>,
@@ -3039,8 +3098,7 @@ struct FolderDocumentsView: View {
             .disabled(!hasSelection)
             Spacer()
             Button {
-                quickZipName = ""
-                showingQuickZipNamePrompt = true
+                showingZipExportSheet = true
             } label: {
                 Label("Compress", systemImage: zipSymbolName())
             }
@@ -3367,7 +3425,8 @@ struct FolderDocumentsView: View {
                         type: old.type,
                         imageData: old.imageData,
                         pdfData: old.pdfData,
-                        originalFileData: old.originalFileData
+                        originalFileData: old.originalFileData,
+                        sensitiveFlags: old.sensitiveFlags
                     )
 
                     // Trigger persistence
@@ -3428,6 +3487,10 @@ struct FolderDocumentsView: View {
                     }
                 )
             }
+        }
+        .sheet(item: $importBatchResult) { batch in
+            ImportReviewView(result: batch)
+                .environmentObject(documentManager)
         }
     }
 
@@ -3767,7 +3830,8 @@ struct FolderDocumentsView: View {
                         type: document.type,
                         imageData: document.imageData,
                         pdfData: document.pdfData,
-                        originalFileData: document.originalFileData
+                        originalFileData: document.originalFileData,
+                        sensitiveFlags: document.sensitiveFlags
                     )
 
                     self.documentManager.addDocument(withFolder)
@@ -3795,7 +3859,8 @@ struct FolderDocumentsView: View {
                                 type: current.type,
                                 imageData: current.imageData,
                                 pdfData: current.pdfData,
-                                originalFileData: current.originalFileData
+                                originalFileData: current.originalFileData,
+                                sensitiveFlags: current.sensitiveFlags
                             )
                             if let idx = self.documentManager.documents.firstIndex(where: { $0.id == current.id }) {
                                 self.documentManager.documents[idx] = updated
@@ -3805,6 +3870,9 @@ struct FolderDocumentsView: View {
                 }
 
                 self.isProcessing = false
+                if !processedDocuments.isEmpty {
+                    self.importBatchResult = ImportBatchResult(documentIds: processedDocuments.map(\.id), importedAt: Date())
+                }
             }
         }
     }

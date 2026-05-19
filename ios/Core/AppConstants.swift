@@ -24,7 +24,7 @@ enum AppConstants {
     }
 
     enum AppGroup {
-        static let identifier = "group.com.purzavlad.insight"
+        static let identifier = "group.com.purzavlad1.insight"
         static let sharedInboxFolder = "ShareInbox"
     }
 

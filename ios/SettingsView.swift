@@ -23,6 +23,7 @@ struct SettingsView: View {
     @EnvironmentObject private var authService: AuthService
     @AppStorage("appTheme") private var appThemeRaw = AppTheme.system.rawValue
     @AppStorage("useFaceID") private var useFaceID = false
+    @AppStorage("hasSeenModelConsent") private var hasSeenModelConsent = false
     @State private var isFaceIDAvailable = false
     @State private var faceIDStatusText = ""
     @State private var showingFaceIDError = false
@@ -34,6 +35,11 @@ struct SettingsView: View {
     @State private var confirmPasscode = ""
     @State private var showingPasscodeError = false
     @State private var passcodeErrorMessage = ""
+
+    @State private var showingDeleteAccountConfirm = false
+    @State private var showingWithdrawConsentConfirm = false
+    @State private var isDeletingAccount = false
+    @State private var accountErrorMessage: String? = nil
 
     var body: some View {
         NavigationStack {
@@ -88,13 +94,56 @@ struct SettingsView: View {
                 }
 
                 Section(header: Text("Account")) {
-                    if let email = authService.currentUserEmail {
-                        Text(email)
+                    if authService.isGuestMode {
+                        Text("Guest mode — no account")
                             .font(.footnote)
                             .foregroundColor(.secondary)
+                        Button("Sign In / Create Account") {
+                            authService.exitGuestMode()
+                        }
+                    } else {
+                        if let email = authService.currentUserEmail {
+                            Text(email)
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
+                        }
+                        Button("Sign Out", role: .destructive) {
+                            authService.signOut()
+                        }
+                        if let errMsg = accountErrorMessage {
+                            Text(errMsg)
+                                .font(.footnote)
+                                .foregroundColor(.red)
+                        }
+                        Button(role: .destructive) {
+                            showingDeleteAccountConfirm = true
+                        } label: {
+                            if isDeletingAccount {
+                                HStack {
+                                    ProgressView()
+                                    Text("Deleting…")
+                                }
+                            } else {
+                                Text("Delete Account Permanently")
+                            }
+                        }
+                        .disabled(isDeletingAccount)
                     }
-                    Button("Sign Out", role: .destructive) {
-                        authService.signOut()
+                }
+
+                Section(header: Text("Privacy")) {
+                    Button {
+                        if let url = URL(string: "mailto:contact.insightapp@gmail.com?subject=Insight%20Support") {
+                            UIApplication.shared.open(url)
+                        }
+                    } label: {
+                        Label("Contact Support", systemImage: "envelope")
+                    }
+
+                    Button(role: .destructive) {
+                        showingWithdrawConsentConfirm = true
+                    } label: {
+                        Label("Withdraw AI Model Consent", systemImage: "hand.raised")
                     }
                 }
 
@@ -125,6 +174,22 @@ struct SettingsView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(passcodeErrorMessage)
+        }
+        .alert("Delete Account", isPresented: $showingDeleteAccountConfirm) {
+            Button("Delete", role: .destructive) {
+                Task { await deleteAccount() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will permanently delete your account and all associated data. This action cannot be undone.")
+        }
+        .alert("Withdraw Consent", isPresented: $showingWithdrawConsentConfirm) {
+            Button("Withdraw", role: .destructive) {
+                withdrawConsent()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The AI model consent will be reset. You will be asked again on next launch. Your account will be signed out.")
         }
         .sheet(isPresented: $showingPasscodeSheet) {
             NavigationStack {
@@ -209,6 +274,25 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private func deleteAccount() async {
+        isDeletingAccount = true
+        accountErrorMessage = nil
+        do {
+            try await authService.deleteAccount()
+        } catch {
+            accountErrorMessage = error.localizedDescription
+        }
+        isDeletingAccount = false
+    }
+
+    private func withdrawConsent() {
+        UserDefaults.standard.removeObject(forKey: "modelDownloadConsented")
+        UserDefaults.standard.removeObject(forKey: "modelDownloadDeclined")
+        UserDefaults.standard.removeObject(forKey: "modelReady")
+        hasSeenModelConsent = false
+        authService.signOut()
     }
 
     private func savePasscode() {

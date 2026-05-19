@@ -155,11 +155,12 @@ class ConversionService: NSObject {
                     return
                 }
 
-                let errorCode = String(data: data ?? Data(), encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .lowercased() ?? "unknown_error"
+                let rawBody = String(data: data ?? Data(), encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let isHTML = rawBody.lowercased().hasPrefix("<html") || rawBody.lowercased().hasPrefix("<!doctype")
+                let errorCode = isHTML ? "server_error" : (rawBody.lowercased().isEmpty ? "unknown_error" : rawBody.lowercased())
 
-                if status == 429, retryCount < self.maxRetries {
+                if (status == 429 || status == 503), retryCount < self.maxRetries {
                     let delay = self.retryDelays[retryCount]
                     DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) {
                         self.performConvert(inputPath: inputPath,
@@ -362,6 +363,9 @@ enum ConversionServiceError: Error {
         case .emptyResponse:
             return "Empty response"
         case .httpError(let status, let errorCode):
+            if errorCode == "server_error" {
+                return "Server error (\(status)). Please try again later."
+            }
             return "HTTP \(status): \(errorCode)"
         case .writeFailed(let reason):
             return reason
