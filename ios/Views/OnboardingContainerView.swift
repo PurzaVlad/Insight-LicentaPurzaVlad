@@ -25,6 +25,7 @@ struct OnboardingContainerView: View {
                     hasCompletedOnboarding = true
                 }
                 .environmentObject(lockManager)
+                .environmentObject(authService)
             }
         }
         .tint(Color("Primary"))

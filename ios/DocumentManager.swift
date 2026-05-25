@@ -377,6 +377,12 @@ class DocumentManager: ObservableObject {
         saveDocumentOnly(documents[idx])
     }
 
+    func updateExpiration(for documentId: UUID, date: Date?, label: String?) {
+        guard let idx = documents.firstIndex(where: { $0.id == documentId }) else { return }
+        documents[idx] = documents[idx].with(expirationDate: date, expirationLabel: label)
+        saveDocumentOnly(documents[idx])
+    }
+
     func generateTags(for document: Document, force: Bool = false) {
         if !force && !document.tags.isEmpty { return }
         guard let edgeAI = EdgeAI.shared else { return }
@@ -759,6 +765,7 @@ class DocumentManager: ObservableObject {
             }
 
             let detectedFlags = Array(SensitiveDataDetector.detect(in: content))
+            let detectedExpiry = ExpiryExtractorService.shared.extract(from: content)
 
             let baseDocument = Document(
                 id: docId,
@@ -775,7 +782,9 @@ class DocumentManager: ObservableObject {
                 imageData: result.imageData,
                 pdfData: result.pdfData,
                 originalFileData: result.originalFileData,
-                sensitiveFlags: detectedFlags
+                sensitiveFlags: detectedFlags,
+                expirationDate: detectedExpiry?.date,
+                expirationLabel: detectedExpiry?.label
             )
 
             AppLogger.documents.info("Document created: '\(baseDocument.title)' (\(baseDocument.type.rawValue), \(baseDocument.content.count) chars)")

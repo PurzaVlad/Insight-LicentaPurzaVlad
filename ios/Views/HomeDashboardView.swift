@@ -106,6 +106,7 @@ struct HomeDashboardView: View {
             VStack(alignment: .leading, spacing: 24) {
                 greetingSection
                 statsSection
+                upcomingExpirationsSection
                 recentSection
                 browseSection
             }
@@ -155,6 +156,45 @@ struct HomeDashboardView: View {
                 icon: "exclamationmark.shield.fill",
                 color: sensitive > 0 ? .orange : Color(.tertiaryLabel)
             )
+        }
+    }
+
+    // MARK: - Upcoming Expirations
+
+    private var expiringDocuments: [Document] {
+        documentManager.documents
+            .filter { $0.expirationDate != nil }
+            .sorted { $0.expirationDate! < $1.expirationDate! }
+    }
+
+    @ViewBuilder
+    private var upcomingExpirationsSection: some View {
+        if !expiringDocuments.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Upcoming Expirations")
+                        .font(.headline)
+                    Spacer()
+                    NavigationLink {
+                        ExpiryListView(onOpenDocument: openDocument)
+                            .environmentObject(documentManager)
+                    } label: {
+                        Text("See All")
+                            .font(.subheadline)
+                            .foregroundColor(Color("Primary"))
+                    }
+                }
+                VStack(spacing: 0) {
+                    ForEach(Array(expiringDocuments.prefix(3).enumerated()), id: \.element.id) { idx, doc in
+                        ExpiryDashboardRow(document: doc) { openDocument(doc) }
+                        if idx < min(3, expiringDocuments.count) - 1 {
+                            Divider().padding(.leading, 52)
+                        }
+                    }
+                }
+                .background(Color(.secondarySystemGroupedBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
         }
     }
 
@@ -463,7 +503,9 @@ struct HomeDashboardView: View {
                                 sortOrder: current.sortOrder, type: current.type,
                                 imageData: current.imageData, pdfData: current.pdfData,
                                 originalFileData: current.originalFileData,
-                                sensitiveFlags: current.sensitiveFlags
+                                sensitiveFlags: current.sensitiveFlags,
+                                expirationDate: current.expirationDate,
+                                expirationLabel: current.expirationLabel
                             )
                             if let idx = self.documentManager.documents.firstIndex(where: { $0.id == current.id }) {
                                 self.documentManager.documents[idx] = updated
@@ -713,6 +755,88 @@ private struct BrowseGroup<Content: View>: View {
             }
             .background(Color(.secondarySystemGroupedBackground))
             .cornerRadius(12)
+        }
+    }
+}
+
+// MARK: - ExpiryDashboardRow
+
+private struct ExpiryDashboardRow: View {
+    let document: Document
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(urgencyColor.opacity(0.12))
+                        .frame(width: 36, height: 36)
+                    Image(systemName: typeIcon)
+                        .foregroundColor(urgencyColor)
+                        .font(.system(size: 15, weight: .medium))
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(document.title)
+                        .font(.system(size: 15))
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                    if let label = document.expirationLabel {
+                        Text(label)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                Spacer()
+                Text(daysLabel)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(urgencyColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(urgencyColor.opacity(0.12))
+                    .clipShape(Capsule())
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var daysLabel: String {
+        guard let date = document.expirationDate else { return "" }
+        let days = Calendar.current.dateComponents(
+            [.day],
+            from: Calendar.current.startOfDay(for: Date()),
+            to: Calendar.current.startOfDay(for: date)
+        ).day ?? 0
+        if days < 0 { return "Expired" }
+        if days == 0 { return "Today" }
+        if days == 1 { return "1 day" }
+        if days < 30 { return "\(days) days" }
+        let months = days / 30
+        return months == 1 ? "1 month" : "\(months) months"
+    }
+
+    private var urgencyColor: Color {
+        guard let date = document.expirationDate else { return .secondary }
+        let days = Calendar.current.dateComponents([.day], from: Date(), to: date).day ?? 0
+        if days < 0 { return .red }
+        if days <= 7 { return .red }
+        if days <= 30 { return .orange }
+        return .green
+    }
+
+    private var typeIcon: String {
+        switch document.type {
+        case .pdf, .scanned: return "doc.richtext"
+        case .docx: return "doc.text"
+        case .xls, .xlsx: return "tablecells"
+        case .ppt, .pptx: return "play.rectangle"
+        case .image: return "photo"
+        case .zip: return "archivebox"
+        case .text: return "doc.plaintext"
         }
     }
 }

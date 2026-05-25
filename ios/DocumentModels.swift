@@ -19,6 +19,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
     let pdfData: Data?
     let originalFileData: Data?
     let sensitiveFlags: [SensitiveDataFlag]
+    let expirationDate: Date?
+    let expirationLabel: String?
 
     enum DocumentCategory: String, CaseIterable, Codable {
         case general = "General"
@@ -70,7 +72,9 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         imageData: [Data]?,
         pdfData: Data?,
         originalFileData: Data? = nil,
-        sensitiveFlags: [SensitiveDataFlag] = []
+        sensitiveFlags: [SensitiveDataFlag] = [],
+        expirationDate: Date? = nil,
+        expirationLabel: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -95,6 +99,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         self.pdfData = pdfData
         self.originalFileData = originalFileData
         self.sensitiveFlags = sensitiveFlags
+        self.expirationDate = expirationDate
+        self.expirationLabel = expirationLabel
     }
 
     enum CodingKeys: String, CodingKey {
@@ -116,6 +122,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         case pdfData
         case originalFileData
         case sensitiveFlags
+        case expirationDate
+        case expirationLabel
     }
 
     init(from decoder: Decoder) throws {
@@ -144,6 +152,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         pdfData = try container.decodeIfPresent(Data.self, forKey: .pdfData)
         originalFileData = try container.decodeIfPresent(Data.self, forKey: .originalFileData)
         sensitiveFlags = (try? container.decodeIfPresent([SensitiveDataFlag].self, forKey: .sensitiveFlags)) ?? []
+        expirationDate = try container.decodeIfPresent(Date.self, forKey: .expirationDate)
+        expirationLabel = try container.decodeIfPresent(String.self, forKey: .expirationLabel)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -165,6 +175,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         if !sensitiveFlags.isEmpty {
             try container.encode(sensitiveFlags, forKey: .sensitiveFlags)
         }
+        try container.encodeIfPresent(expirationDate, forKey: .expirationDate)
+        try container.encodeIfPresent(expirationLabel, forKey: .expirationLabel)
         // Binary data is stored on disk via FileStorageService, not in JSON
     }
 
@@ -330,7 +342,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: type,
             imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
-            sensitiveFlags: sensitiveFlags
+            sensitiveFlags: sensitiveFlags,
+            expirationDate: expirationDate, expirationLabel: expirationLabel
         )
     }
 
@@ -341,7 +354,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: type,
             imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
-            sensitiveFlags: sensitiveFlags
+            sensitiveFlags: sensitiveFlags,
+            expirationDate: expirationDate, expirationLabel: expirationLabel
         )
     }
 
@@ -352,7 +366,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: type,
             imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
-            sensitiveFlags: sensitiveFlags
+            sensitiveFlags: sensitiveFlags,
+            expirationDate: expirationDate, expirationLabel: expirationLabel
         )
     }
 
@@ -363,7 +378,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: type,
             imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
-            sensitiveFlags: sensitiveFlags
+            sensitiveFlags: sensitiveFlags,
+            expirationDate: expirationDate, expirationLabel: expirationLabel
         )
     }
 
@@ -374,7 +390,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: type,
             imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
-            sensitiveFlags: sensitiveFlags
+            sensitiveFlags: sensitiveFlags,
+            expirationDate: expirationDate, expirationLabel: expirationLabel
         )
     }
 
@@ -385,7 +402,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: type,
             imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
-            sensitiveFlags: sensitiveFlags
+            sensitiveFlags: sensitiveFlags,
+            expirationDate: expirationDate, expirationLabel: expirationLabel
         )
     }
 
@@ -396,7 +414,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: type,
             imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
-            sensitiveFlags: sensitiveFlags
+            sensitiveFlags: sensitiveFlags,
+            expirationDate: expirationDate, expirationLabel: expirationLabel
         )
     }
 
@@ -407,7 +426,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: type,
             imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
-            sensitiveFlags: sensitiveFlags
+            sensitiveFlags: sensitiveFlags,
+            expirationDate: expirationDate, expirationLabel: expirationLabel
         )
     }
 
@@ -418,7 +438,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: newType,
             imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
-            sensitiveFlags: sensitiveFlags
+            sensitiveFlags: sensitiveFlags,
+            expirationDate: expirationDate, expirationLabel: expirationLabel
         )
     }
 
@@ -429,7 +450,20 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: type,
             imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
-            sensitiveFlags: sensitiveFlags
+            sensitiveFlags: sensitiveFlags,
+            expirationDate: expirationDate, expirationLabel: expirationLabel
+        )
+    }
+
+    func with(expirationDate: Date?, expirationLabel: String?) -> Document {
+        Document(
+            id: id, title: title, content: content, summary: summary,
+            ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
+            tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
+            folderId: folderId, sortOrder: sortOrder, type: type,
+            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData,
+            sensitiveFlags: sensitiveFlags,
+            expirationDate: expirationDate, expirationLabel: expirationLabel
         )
     }
 
@@ -441,7 +475,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: type,
             imageData: nil, pdfData: nil, originalFileData: nil,
-            sensitiveFlags: sensitiveFlags
+            sensitiveFlags: sensitiveFlags,
+            expirationDate: expirationDate, expirationLabel: expirationLabel
         )
     }
 }

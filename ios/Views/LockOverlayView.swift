@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LockOverlayView: View {
     @ObservedObject var lockManager: LockManager
+    var onSignOut: (() -> Void)? = nil
 
     var body: some View {
         ZStack {
@@ -57,6 +58,15 @@ struct LockOverlayView: View {
                             lockManager.passcodeEntry = ""
                         }
                     }
+                }
+
+                if let signOut = onSignOut {
+                    Button("Use a different account") {
+                        signOut()
+                    }
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .padding(.top, 8)
                 }
             }
             .padding(24)

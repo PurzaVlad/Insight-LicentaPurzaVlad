@@ -167,7 +167,12 @@ struct TabContainerView: View {
             }
 
             if lockManager.isLocked {
-                LockOverlayView(lockManager: lockManager)
+                LockOverlayView(lockManager: lockManager, onSignOut: {
+                    lockManager.isLocked = false
+                    lockManager.showingPasscodeEntry = false
+                    lockManager.passcodeEntry = ""
+                    authService.signOut()
+                })
             }
 
             if isOperationLoadingVisible && !isInitialStartupLoadingVisible {

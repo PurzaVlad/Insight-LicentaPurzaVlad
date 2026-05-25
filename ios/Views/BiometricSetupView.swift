@@ -5,6 +5,7 @@ struct BiometricSetupView: View {
     var onComplete: () -> Void
 
     @EnvironmentObject private var lockManager: LockManager
+    @EnvironmentObject private var authService: AuthService
 
     @State private var faceIDEnabled = false
     @State private var faceIDError = ""
@@ -76,6 +77,14 @@ struct BiometricSetupView: View {
             .background(Color(.systemGroupedBackground))
             .navigationTitle("Security")
             .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Sign out") {
+                        authService.signOut()
+                    }
+                    .foregroundStyle(.secondary)
+                }
+            }
         }
         .sheet(isPresented: $showPasscodeSheet) {
             PasscodeSetupSheet(onComplete: {
