@@ -145,11 +145,21 @@ struct NativeChatView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         if messages.isEmpty {
-                            Text("Model Ready.")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity)
-                                .padding(.top, 24)
+                            VStack(spacing: 10) {
+                                Image(systemName: "text.bubble")
+                                    .font(.system(size: 36, weight: .light))
+                                    .foregroundStyle(Color("Primary").opacity(0.7))
+                                Text("Ask Anything")
+                                    .font(.headline)
+                                    .foregroundStyle(.primary)
+                                Text("Select a document and start a conversation, or ask a general question.")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 32)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 48)
                         }
 
                         ForEach(messages) { msg in

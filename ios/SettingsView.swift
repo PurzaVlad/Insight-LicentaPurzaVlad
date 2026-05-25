@@ -132,6 +132,21 @@ struct SettingsView: View {
                 }
 
                 Section(header: Text("Privacy")) {
+                    Button(role: .destructive) {
+                        showingWithdrawConsentConfirm = true
+                    } label: {
+                        Label("Withdraw AI Model Consent", systemImage: "hand.raised")
+                    }
+                }
+
+                Section(header: Text("About")) {
+                    HStack {
+                        Text("Version")
+                        Spacer()
+                        Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—")
+                            .foregroundColor(.secondary)
+                    }
+
                     Button {
                         if let url = URL(string: "mailto:contact.insightapp@gmail.com?subject=Insight%20Support") {
                             UIApplication.shared.open(url)
@@ -140,10 +155,16 @@ struct SettingsView: View {
                         Label("Contact Support", systemImage: "envelope")
                     }
 
-                    Button(role: .destructive) {
-                        showingWithdrawConsentConfirm = true
-                    } label: {
-                        Label("Withdraw AI Model Consent", systemImage: "hand.raised")
+                    if let privacyURL = URL(string: "https://purzavlad.github.io/insight-legal/privacy") {
+                        Link(destination: privacyURL) {
+                            Label("Privacy Policy", systemImage: "hand.raised.fill")
+                        }
+                    }
+
+                    if let termsURL = URL(string: "https://purzavlad.github.io/insight-legal/terms") {
+                        Link(destination: termsURL) {
+                            Label("Terms of Service", systemImage: "doc.text")
+                        }
                     }
                 }
 

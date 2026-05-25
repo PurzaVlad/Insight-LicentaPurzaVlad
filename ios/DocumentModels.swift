@@ -522,6 +522,7 @@ struct DocumentFolder: Identifiable, Codable, Hashable, Equatable {
     let dateCreated: Date
     let parentId: UUID?
     let sortOrder: Int
+    let description: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -529,21 +530,24 @@ struct DocumentFolder: Identifiable, Codable, Hashable, Equatable {
         case dateCreated
         case parentId
         case sortOrder
+        case description
     }
 
-    init(name: String, parentId: UUID? = nil, sortOrder: Int = 0) {
+    init(name: String, parentId: UUID? = nil, description: String? = nil, sortOrder: Int = 0) {
         self.id = UUID()
         self.name = name
         self.dateCreated = Date()
         self.parentId = parentId
+        self.description = description
         self.sortOrder = sortOrder
     }
 
-    init(id: UUID, name: String, dateCreated: Date, parentId: UUID? = nil, sortOrder: Int = 0) {
+    init(id: UUID, name: String, dateCreated: Date, parentId: UUID? = nil, description: String? = nil, sortOrder: Int = 0) {
         self.id = id
         self.name = name
         self.dateCreated = dateCreated
         self.parentId = parentId
+        self.description = description
         self.sortOrder = sortOrder
     }
 
@@ -554,6 +558,38 @@ struct DocumentFolder: Identifiable, Codable, Hashable, Equatable {
         self.dateCreated = try container.decode(Date.self, forKey: .dateCreated)
         self.parentId = try container.decodeIfPresent(UUID.self, forKey: .parentId)
         self.sortOrder = try container.decodeIfPresent(Int.self, forKey: .sortOrder) ?? 0
+        self.description = try container.decodeIfPresent(String.self, forKey: .description)
+    }
+}
+
+// MARK: - Folder Suggestion Types
+
+struct ProposedSubfolder: Codable {
+    let name: String
+    let documentIds: [UUID]
+}
+
+struct FolderSplitJSON: Codable {
+    struct SubfolderEntry: Codable {
+        let name: String
+        let docs: [String]
+    }
+    let subfolders: [SubfolderEntry]
+}
+
+enum FolderSuggestionKind {
+    case moveToFolder(documentId: UUID, folderId: UUID, folderPath: String)
+    case createFolderAndMove(documentId: UUID, name: String, parentId: UUID?)
+    case splitFolder(folderId: UUID, proposed: [ProposedSubfolder])
+}
+
+struct FolderSuggestion: Identifiable {
+    let id: UUID
+    let kind: FolderSuggestionKind
+
+    init(kind: FolderSuggestionKind) {
+        self.id = UUID()
+        self.kind = kind
     }
 }
 

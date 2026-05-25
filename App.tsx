@@ -60,6 +60,8 @@ const SUMMARY_TASK_MARKER = '<<<SUMMARY_TASK>>>';
 const NAME_MARKER = '<<<NAME_REQUEST>>>';
 const TAG_MARKER = '<<<TAG_REQUEST>>>';
 const KEYWORD_MARKER = '<<<KEYWORD_REQUEST>>>';
+const FOLDER_SPLIT_MARKER = '<<<FOLDER_SPLIT_REQUEST>>>';
+const SUBFOLDER_ROUTE_MARKER = '<<<SUBFOLDER_ROUTE>>>';
 
 
 const INITIAL_CONVERSATION: Message[] = [
@@ -473,8 +475,10 @@ useEffect(() => {
         const isName = rawPrompt.startsWith(NAME_MARKER);
         const isTag = rawPrompt.startsWith(TAG_MARKER);
         const isKeyword = rawPrompt.startsWith(KEYWORD_MARKER);
+        const isFolderSplit = rawPrompt.includes(FOLDER_SPLIT_MARKER);
+        const isSubfolderRoute = rawPrompt.includes(SUBFOLDER_ROUTE_MARKER);
         // Structured Swift task (summary, keyword, etc.) — n_predict controls length, not JS caps
-        const isStructuredTask = (noHistory && nPredictOverride !== null) || isKeyword;
+        const isStructuredTask = (noHistory && nPredictOverride !== null) || isKeyword || isFolderSplit || isSubfolderRoute;
         const userContent = isName
           ? rawPrompt.slice(NAME_MARKER.length).trim()
           : isTag
@@ -624,6 +628,44 @@ useEffect(() => {
             kwText = (kwText.split(/[,.]/))[0].trim();
             kwText = kwText.split(/\s+/).filter(Boolean).slice(0, 3).join(' ');
             text = kwText;
+            generationHitTokenLimit = false;
+          } else if (isFolderSplit) {
+            const splitContent = rawPrompt.replace(FOLDER_SPLIT_MARKER, '').trim();
+            const splitPrompt = formatPrompt([
+              { role: 'system', content: 'Group these documents into 2-4 thematic subfolders. Return ONLY valid JSON with no explanation: {"subfolders":[{"name":"...","docs":["uuid1"]}]}', timestamp: Date.now() },
+              { role: 'user', content: splitContent, timestamp: Date.now() },
+            ]);
+            const splitResult = await context.completion({
+              prompt: splitPrompt,
+              n_predict: 200,
+              temperature: DEFAULT_TEMPERATURE,
+              top_p: DEFAULT_TOP_P,
+              repeat_penalty: DEFAULT_REPEAT_PENALTY,
+              repeat_last_n: 128,
+              min_p: 0.05,
+              stop: stopTokens,
+            }, () => {});
+            const raw = (splitResult?.text ?? '').trim();
+            const jsonMatch = raw.match(/\{[\s\S]*\}/);
+            text = jsonMatch ? jsonMatch[0] : '';
+            generationHitTokenLimit = false;
+          } else if (isSubfolderRoute) {
+            const routeContent = rawPrompt.replace(SUBFOLDER_ROUTE_MARKER, '').trim();
+            const routePrompt = formatPrompt([
+              { role: 'system', content: 'Reply with only the subfolder name, nothing else.', timestamp: Date.now() },
+              { role: 'user', content: routeContent, timestamp: Date.now() },
+            ]);
+            const routeResult = await context.completion({
+              prompt: routePrompt,
+              n_predict: 15,
+              temperature: DEFAULT_TEMPERATURE,
+              top_p: DEFAULT_TOP_P,
+              repeat_penalty: DEFAULT_REPEAT_PENALTY,
+              repeat_last_n: 64,
+              min_p: 0.05,
+              stop: [...stopTokens, '\n'],
+            }, () => {});
+            text = ((routeResult?.text ?? '').trim().split('\n')[0] ?? '').trim();
             generationHitTokenLimit = false;
           } else {
             const nPredictClamped = nPredictOverride ?? DEFAULT_MAX_NEW_TOKENS;
@@ -997,7 +1039,7 @@ useEffect(() => {
 
           if (isSummaryTask && !abortCurrentRef.current) {
             // Strip preamble slipthrough patterns
-            text = text.replace(/^\s*(Here(?:\s+(?:is|are|follows))?|Sure[,!]?|I will|I'll|I can|The user|As requested[,:]?|This is a summary|Below[:\s])[^\n]*?[.!?\n:]\s*/i, '');
+            text = text.replace(/^\s*(Here(?:\s+(?:is|are|follows))?|Sure[,!]?|I will|I'll|I can|The user|As requested[,:]?|This is a summary|Below[:\s])[^\n]*\n/i, '');
             text = squashWordStutter(text);
             text = approxDedupeSentences(dedupeSentencesGlobal(dedupeRepeats(text)));
             text = trimRepeatedTail(text);

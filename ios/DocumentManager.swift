@@ -22,6 +22,7 @@ class DocumentManager: ObservableObject {
     @Published var prefersGridLayout: Bool = false
     @Published private(set) var lastAccessedMap: [UUID: Date] = [:]
     @Published private(set) var vaultUnavailableMessage: String?
+    @Published var pendingSuggestions: [FolderSuggestion] = []
 
     // Private state
     private var isImportingSharedInbox = false
@@ -420,6 +421,7 @@ class DocumentManager: ObservableObject {
                 if !keyword.isEmpty {
                     keyword = self.aiService.normalizeKeyword(keyword, against: existingKeywords)
                     self.updateKeywords(for: document.id, to: keyword)
+                    self.suggestFolderForDocument(documentId: document.id, keyword: keyword)
                 } else {
                     AppLogger.ai.warning("Keyword empty after processing for '\(document.title)' — raw was: '\(raw)'")
                 }
@@ -431,15 +433,24 @@ class DocumentManager: ObservableObject {
 
     // MARK: - Folder Management
 
-    func createFolder(name: String, parentId: UUID? = nil) {
+    func createFolder(name: String, parentId: UUID? = nil, description: String? = nil) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let maxOrder = folders
             .filter { $0.parentId == parentId }
             .map { $0.sortOrder }
             .max() ?? -1
-        folders.append(DocumentFolder(name: trimmed, parentId: parentId, sortOrder: maxOrder + 1))
+        folders.append(DocumentFolder(name: trimmed, parentId: parentId, description: description, sortOrder: maxOrder + 1))
         saveIndex()
+    }
+
+    @discardableResult
+    private func createFolderInternal(name: String, parentId: UUID?, description: String? = nil) -> DocumentFolder {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let maxOrder = folders.filter { $0.parentId == parentId }.map { $0.sortOrder }.max() ?? -1
+        let folder = DocumentFolder(name: trimmed, parentId: parentId, description: description, sortOrder: maxOrder + 1)
+        folders.append(folder)
+        return folder
     }
 
     func renameFolder(folderId: UUID, to newName: String) {
@@ -447,7 +458,7 @@ class DocumentManager: ObservableObject {
         guard !trimmed.isEmpty else { return }
         if let idx = folders.firstIndex(where: { $0.id == folderId }) {
             let old = folders[idx]
-            folders[idx] = DocumentFolder(id: old.id, name: trimmed, dateCreated: old.dateCreated, parentId: old.parentId, sortOrder: old.sortOrder)
+            folders[idx] = DocumentFolder(id: old.id, name: trimmed, dateCreated: old.dateCreated, parentId: old.parentId, description: old.description, sortOrder: old.sortOrder)
             saveIndex()
         }
     }
@@ -527,6 +538,7 @@ class DocumentManager: ObservableObject {
             name: old.name,
             dateCreated: old.dateCreated,
             parentId: parentId,
+            description: old.description,
             sortOrder: maxOrder + 1
         )
 
@@ -566,6 +578,7 @@ class DocumentManager: ObservableObject {
                         name: old.name,
                         dateCreated: old.dateCreated,
                         parentId: old.parentId,
+                        description: old.description,
                         sortOrder: i
                     )
                 }
@@ -627,6 +640,113 @@ class DocumentManager: ObservableObject {
     func folderName(for folderId: UUID?) -> String? {
         guard let folderId else { return nil }
         return folders.first(where: { $0.id == folderId })?.name
+    }
+
+    // MARK: - AI Folder Suggestions
+
+    func suggestFolderForDocument(documentId: UUID, keyword: String) {
+        guard !keyword.isEmpty else { return }
+        guard let doc = getDocument(by: documentId) else { return }
+        guard doc.folderId == nil else { return }
+
+        let match = folders.first { $0.parentId == nil && $0.name.lowercased() == keyword.lowercased() }
+
+        if let folder = match {
+            let subfolders = self.folders(in: folder.id)
+            if subfolders.isEmpty {
+                pendingSuggestions.append(FolderSuggestion(kind: .moveToFolder(documentId: documentId, folderId: folder.id, folderPath: folder.name)))
+            } else {
+                guard let edgeAI = EdgeAI.shared else {
+                    pendingSuggestions.append(FolderSuggestion(kind: .moveToFolder(documentId: documentId, folderId: folder.id, folderPath: folder.name)))
+                    return
+                }
+                let prompt = aiService.buildSubfolderRoutingPrompt(document: doc, parentFolder: folder, subfolders: subfolders)
+                edgeAI.generate(prompt, resolver: { result in
+                    DispatchQueue.main.async {
+                        let raw = (result as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: .newlines).first ?? ""
+                        let matched = subfolders.first { $0.name.lowercased() == raw.lowercased() }
+                        if let sub = matched {
+                            self.pendingSuggestions.append(FolderSuggestion(kind: .moveToFolder(documentId: documentId, folderId: sub.id, folderPath: "\(folder.name) > \(sub.name)")))
+                        } else {
+                            self.pendingSuggestions.append(FolderSuggestion(kind: .moveToFolder(documentId: documentId, folderId: folder.id, folderPath: folder.name)))
+                        }
+                    }
+                }, rejecter: { _, _, _ in })
+            }
+        } else {
+            pendingSuggestions.append(FolderSuggestion(kind: .createFolderAndMove(documentId: documentId, name: keyword, parentId: nil)))
+        }
+    }
+
+    func checkForSplitSuggestion(folderId: UUID) {
+        let docs = documents(in: folderId)
+        guard docs.count >= 10 else { return }
+        guard let folder = folders.first(where: { $0.id == folderId }) else { return }
+        let dismissedKey = "splitSuggestionDismissed_\(folderId.uuidString)"
+        guard !UserDefaults.standard.bool(forKey: dismissedKey) else { return }
+        let alreadyPending = pendingSuggestions.contains {
+            if case .splitFolder(let sid, _) = $0.kind { return sid == folderId }
+            return false
+        }
+        guard !alreadyPending else { return }
+        guard let edgeAI = EdgeAI.shared else { return }
+        let prompt = aiService.buildFolderSplitPrompt(folder: folder, documents: docs)
+        edgeAI.generate(prompt, resolver: { result in
+            DispatchQueue.main.async {
+                let raw = result as? String ?? ""
+                let jsonStr = raw.range(of: "{").flatMap { start in
+                    raw.range(of: "}", options: .backwards).map { end in
+                        String(raw[start.lowerBound...end.upperBound])
+                    }
+                } ?? raw
+                guard let data = jsonStr.data(using: .utf8),
+                      let parsed = try? JSONDecoder().decode(FolderSplitJSON.self, from: data),
+                      !parsed.subfolders.isEmpty else { return }
+                let proposed: [ProposedSubfolder] = parsed.subfolders.compactMap { entry in
+                    let ids = entry.docs.compactMap { UUID(uuidString: $0) }
+                    return ids.isEmpty ? nil : ProposedSubfolder(name: entry.name, documentIds: ids)
+                }
+                guard !proposed.isEmpty else { return }
+                self.pendingSuggestions.append(FolderSuggestion(kind: .splitFolder(folderId: folderId, proposed: proposed)))
+            }
+        }, rejecter: { _, _, _ in })
+    }
+
+    func executeSplit(_ proposal: [ProposedSubfolder], in folderId: UUID) {
+        for sub in proposal {
+            let newFolder = createFolderInternal(name: sub.name, parentId: folderId)
+            for docId in sub.documentIds {
+                moveDocument(documentId: docId, toFolder: newFolder.id)
+            }
+        }
+        saveIndex()
+        pendingSuggestions.removeAll {
+            if case .splitFolder(let sid, _) = $0.kind { return sid == folderId }
+            return false
+        }
+    }
+
+    func acceptFolderSuggestion(_ suggestion: FolderSuggestion) {
+        switch suggestion.kind {
+        case .moveToFolder(let docId, let folderId, _):
+            moveDocument(documentId: docId, toFolder: folderId)
+            checkForSplitSuggestion(folderId: folderId)
+        case .createFolderAndMove(let docId, let name, let parentId):
+            createFolder(name: name, parentId: parentId)
+            if let newFolder = folders.last(where: { $0.parentId == parentId && $0.name == name }) {
+                moveDocument(documentId: docId, toFolder: newFolder.id)
+            }
+        case .splitFolder:
+            break
+        }
+        pendingSuggestions.removeAll { $0.id == suggestion.id }
+    }
+
+    func dismissFolderSuggestion(_ suggestion: FolderSuggestion) {
+        if case .splitFolder(let folderId, _) = suggestion.kind {
+            UserDefaults.standard.set(true, forKey: "splitSuggestionDismissed_\(folderId.uuidString)")
+        }
+        pendingSuggestions.removeAll { $0.id == suggestion.id }
     }
 
     private func normalizeSortOrders(in folderId: UUID?) {
@@ -946,6 +1066,7 @@ class DocumentManager: ObservableObject {
                         name: old.name,
                         dateCreated: old.dateCreated,
                         parentId: old.parentId,
+                        description: old.description,
                         sortOrder: i
                     )
                 }

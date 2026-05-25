@@ -125,8 +125,13 @@ class AIService {
         case .medium: factLimit = 8
         case .long:   factLimit = 16
         }
-        let facts = FactExtractorService.extract(from: fullDocumentText(for: document), maxFacts: factLimit)
+        let docText = fullDocumentText(for: document)
+        let facts = FactExtractorService.extract(from: docText, maxFacts: factLimit)
         let limitedFacts = facts.facts
+        // Don't attempt generation if there is truly nothing to summarize
+        guard !docText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !limitedFacts.isEmpty else {
+            return ""
+        }
         let targetTok = targetTokens(factCount: limitedFacts.count, length: length)
 
         let docType = validatedDocType(document.keywordsResume)
@@ -369,6 +374,16 @@ class AIService {
         return prompt
     }
 
+    func buildSubfolderRoutingPrompt(document: Document, parentFolder: DocumentFolder, subfolders: [DocumentFolder]) -> String {
+        let names = subfolders.map { $0.name }.joined(separator: ", ")
+        return "<<<SUBFOLDER_ROUTE>>>\nParent: \(parentFolder.name)\nSubfolders: \(names)\nDocument: \(document.title) (keyword: \(document.keywordsResume))\nWhich subfolder? Reply with just the name."
+    }
+
+    func buildFolderSplitPrompt(folder: DocumentFolder, documents: [Document]) -> String {
+        let docList = documents.map { "- \($0.id.uuidString): \($0.title)" }.joined(separator: "\n")
+        return "<<<FOLDER_SPLIT_REQUEST>>>\nFolder: \(folder.name)\nDocuments:\n\(docList)"
+    }
+
     /// Normalizes a keyword against existing ones using exact, prefix, and Levenshtein matching.
     /// Returns the existing keyword if close enough, otherwise the original.
     func normalizeKeyword(_ keyword: String, against existing: [String]) -> String {
@@ -421,8 +436,11 @@ class AIService {
     /// Returns the stored keyword/sentence if it looks like real content (not a template artifact).
     private func validatedDocType(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Reject if too short or contains template markers
-        guard trimmed.count >= 5, !trimmed.contains("<<<") else { return "" }
+        guard trimmed.count >= 3,
+              trimmed.count <= 40,
+              !trimmed.contains("<<<"),
+              trimmed.range(of: #"^[A-Za-z][A-Za-z \-]*$"#, options: .regularExpression) != nil
+        else { return "" }
         return trimmed
     }
 
@@ -502,9 +520,9 @@ class AIService {
     /// Post-processing pipeline for AI-generated summary output.
     func cleanSummaryOutput(_ raw: String) -> String {
         var result = raw
-        // Strip leading preamble lines (common Qwen meta-commentary slipthrough)
+        // Strip the entire first line when it starts with a known preamble phrase
         result = result.replacingOccurrences(
-            of: #"^\s*(?:Here(?:\s+(?:is|are|follows))?|Sure[,!]?|I will|I'll|I can|The user|As requested[,:]?|This is a summary|Below[:\s])[^\n]*?[.!?\n:]\s*"#,
+            of: #"^\s*(?:Here(?:\s+(?:is|are|follows))?|Sure[,!]?|I will|I'll|I can|The user|As requested[,:]?|This is a summary|Below[:\s])[^\n]*\n"#,
             with: "",
             options: [.regularExpression, .caseInsensitive]
         )
@@ -514,9 +532,9 @@ class AIService {
             with: "",
             options: [.regularExpression, .caseInsensitive]
         )
-        // Strip echoed prompt blocks (KEY FACTS / DOCUMENT CONTENT / TARGET LENGTH)
+        // Strip echoed prompt section header if model echoes it as the first line
         result = result.replacingOccurrences(
-            of: #"(?s)^\s*(?:KEY FACTS|DOCUMENT CONTENT|DOCUMENT TYPE|TARGET LENGTH)[^\n]*\n.*?\n\n"#,
+            of: #"^\s*(?:KEY FACTS|DOCUMENT CONTENT|DOCUMENT TYPE|TARGET LENGTH)[^\n]*\n"#,
             with: "",
             options: [.regularExpression, .caseInsensitive]
         )

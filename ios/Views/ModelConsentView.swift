@@ -26,20 +26,25 @@ struct ModelConsentView: View {
                             .font(.title2)
                             .fontWeight(.bold)
 
-                        Text("Insight analizează documentele tale direct pe dispozitiv, fără a trimite date în cloud. Este nevoie de un model AI care va fi descărcat o singură dată.")
+                        Text("Insight analyzes your documents directly on your device — nothing is sent to the cloud. An AI model (~1 GB) will be downloaded once and stored locally.")
                             .font(.body)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 28)
                     }
 
-                    HStack(spacing: 10) {
-                        Image(systemName: "internaldrive")
-                            .foregroundStyle(Color("Primary"))
-                            .font(.system(size: 15, weight: .medium))
-                        Text("~1 GB va fi descărcat pe dispozitiv")
-                            .font(.subheadline)
-                            .foregroundStyle(.primary)
+                    VStack(spacing: 6) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "internaldrive")
+                                .foregroundStyle(Color("Primary"))
+                                .font(.system(size: 15, weight: .medium))
+                            Text("~1 GB will be downloaded to your device")
+                                .font(.subheadline)
+                                .foregroundStyle(.primary)
+                        }
+                        Text("Wi-Fi recommended for first-time setup.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     .padding(.horizontal, 20)
                     .padding(.vertical, 13)
@@ -56,7 +61,7 @@ struct ModelConsentView: View {
                     Button {
                         grantConsent()
                     } label: {
-                        Text("Descarcă și continuă")
+                        Text("Download & Continue")
                             .fontWeight(.semibold)
                             .frame(maxWidth: .infinity)
                     }
@@ -68,7 +73,7 @@ struct ModelConsentView: View {
                     Button {
                         declineConsent()
                     } label: {
-                        Text("Nu acum")
+                        Text("Not Now")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }

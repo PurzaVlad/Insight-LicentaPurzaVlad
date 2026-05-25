@@ -1,8 +1,5 @@
 import SwiftUI
 
-/// Placeholder welcome screen.
-/// Replace the content between the TODO markers with your design.
-/// The only requirement: call `hasSeenWelcome = true` when the user taps "Get Started".
 struct WelcomeView: View {
     @AppStorage("hasSeenWelcome") private var hasSeenWelcome = false
 

@@ -161,6 +161,12 @@ class SummaryCoordinator: ObservableObject {
             return
         }
         let prompt = AIService.shared.buildSummaryPrompt(for: doc, length: job.length)
+        guard !prompt.isEmpty else {
+            // Document has no extractable content — skip silently
+            summaryRequestsInFlight.remove(docId)
+            finishSummary(for: docId)
+            return
+        }
 
         guard let raw = await generateWithEdgeAI(edgeAI, prompt: prompt) else {
             // Clear any placeholder we wrote (e.g. "Processing summary…" from force=true)
@@ -181,8 +187,15 @@ class SummaryCoordinator: ObservableObject {
 
         let finalText = cleanedSummaryText(raw)
 
-        if !canceledSummaryIds.contains(docId), !finalText.isEmpty {
-            documentManager.updateSummary(for: docId, to: finalText)
+        if !canceledSummaryIds.contains(docId) {
+            // If cleaning stripped everything, fall back to raw output so the document
+            // doesn't stay locked at "Processing summary…" and retry indefinitely.
+            let textToStore = finalText.isEmpty
+                ? raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                : finalText
+            if !textToStore.isEmpty {
+                documentManager.updateSummary(for: docId, to: textToStore)
+            }
         }
 
         summaryRequestsInFlight.remove(docId)
@@ -194,8 +207,6 @@ class SummaryCoordinator: ObservableObject {
 
         if let idx = summaryQueue.firstIndex(where: { $0.documentId == documentId }) {
             summaryQueue.remove(at: idx)
-        } else if !summaryQueue.isEmpty {
-            summaryQueue.removeFirst()
         }
 
         isSummarizing = false
@@ -221,6 +232,9 @@ class SummaryCoordinator: ObservableObject {
 
     private func shouldAutoSummarize(_ doc: Document) -> Bool {
         if doc.type == .zip { return false }
+        let hasContent = !doc.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || (doc.ocrPages?.isEmpty == false)
+        if !hasContent { return false }
         let summaryText = doc.summary.trimmingCharacters(in: .whitespacesAndNewlines)
         if isSummaryPlaceholder(summaryText) {
             return true
