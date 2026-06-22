@@ -1,0 +1,792 @@
+import SwiftUI
+import Foundation
+import UIKit
+import AVFoundation
+import PDFKit
+import SSZipArchive
+import OSLog
+
+// MARK: - Conversion Core
+
+enum PDFToOfficeMode {
+    case ocrEditable
+    case visualImage
+}
+
+enum ConversionView {
+    enum DocumentFormat: String, CaseIterable {
+        case pdf = "PDF"
+        case docx = "DOCX"
+        case image = "JPG"
+        case pptx = "PPTX"
+        case xlsx = "XLSX"
+
+        var fileExtension: String {
+            switch self {
+            case .pdf: return "pdf"
+            case .docx: return "docx"
+            case .image: return "jpg"
+            case .pptx: return "pptx"
+            case .xlsx: return "xlsx"
+            }
+        }
+    }
+
+    struct ConversionResult {
+        let success: Bool
+        let outputData: Data?
+        let filename: String
+        let message: String
+    }
+
+    enum ConversionError: LocalizedError {
+        case unsupportedConversion
+        case conversionFailed
+        case serverFailure(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .unsupportedConversion:
+                return "This conversion is not supported yet"
+            case .conversionFailed:
+                return "Failed to convert document"
+            case .serverFailure(let message):
+                let lower = message.lowercased()
+                if lower.contains("libreoffice") || lower.contains("libre_office") {
+                    return "Conversion failed on the server. Please try again — if the problem persists, the file may be in an unsupported format."
+                }
+                return message
+            }
+        }
+    }
+}
+
+// MARK: - Conversion Helpers (Shared)
+
+func conversionFormatFromDocumentType(_ type: Document.DocumentType) -> ConversionView.DocumentFormat {
+    switch type {
+    case .pdf: return .pdf
+    case .docx: return .docx
+    case .image: return .image
+    case .scanned: return .pdf
+    case .ppt, .pptx: return .pptx
+    case .xls, .xlsx: return .xlsx
+    default: return .pdf
+    }
+}
+
+func convertDocument(
+    documentManager: DocumentManager,
+    document: Document,
+    from sourceFormat: ConversionView.DocumentFormat,
+    to targetFormat: ConversionView.DocumentFormat,
+    pdfToOfficeMode: PDFToOfficeMode = .ocrEditable
+) -> ConversionView.ConversionResult {
+    let latestDocument = documentManager.getDocument(by: document.id) ?? document
+    let baseName = normalizedConversionBaseName(latestDocument.title)
+    let canonicalFilename = conversionOutputFilename(
+        sourceBaseName: baseName,
+        targetExtension: targetFormat.fileExtension
+    )
+    let fallbackFilename = canonicalFilename
+
+    do {
+        var outputData: Data?
+        var serverError: String? = nil
+
+        switch (sourceFormat, targetFormat) {
+        case (.docx, .pdf):
+            let result = convertViaServer(document: latestDocument, to: targetFormat, documentManager: documentManager)
+            outputData = result.data
+            if outputData == nil, !latestDocument.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                AppLogger.conversion.debug("convertDocument: server failed, falling back to text-based PDF for docx")
+                outputData = conversionConvertToPDF(content: latestDocument.content, title: latestDocument.title)
+                serverError = outputData == nil ? result.error : nil
+            } else {
+                serverError = result.error
+            }
+
+        case (.pptx, .pdf), (.xlsx, .pdf):
+            let result = convertViaServer(document: latestDocument, to: targetFormat, documentManager: documentManager)
+            outputData = result.data
+            if outputData == nil, !latestDocument.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                AppLogger.conversion.debug("convertDocument: server failed, falling back to text-based PDF")
+                outputData = conversionConvertToPDF(content: latestDocument.content, title: latestDocument.title)
+                serverError = outputData == nil ? result.error : nil
+            } else {
+                serverError = result.error
+            }
+
+        case (.image, .pdf):
+            if let imageData = documentManager.imageData(for: latestDocument.id) {
+                let images = imageData.compactMap { UIImage(data: $0) }
+                outputData = conversionConvertImagesToPDF(images)
+            } else {
+                outputData = conversionConvertToPDF(content: latestDocument.content, title: latestDocument.title)
+            }
+
+        case (.pdf, .docx):
+            switch pdfToOfficeMode {
+            case .ocrEditable:
+                let result = convertViaServer(document: latestDocument, to: targetFormat, mode: .ocrEditable, documentManager: documentManager)
+                outputData = result.data
+                serverError = result.error
+            case .visualImage:
+                outputData = conversionConvertPDFToImageDOCX(document: latestDocument, baseName: baseName, documentManager: documentManager)
+                serverError = outputData == nil ? "Failed to build image DOCX." : nil
+            }
+
+        case (.pdf, .xlsx), (.pdf, .pptx):
+            let serverMode: ServerConversionMode = (pdfToOfficeMode == .visualImage) ? .visualImage : .ocrEditable
+            let result = convertViaServer(document: latestDocument, to: targetFormat, mode: serverMode, documentManager: documentManager)
+            outputData = result.data
+            serverError = result.error
+
+        case (.pdf, .image):
+            outputData = conversionConvertPDFToJPG(document: latestDocument, documentManager: documentManager)
+            serverError = nil
+
+        default:
+            throw ConversionView.ConversionError.unsupportedConversion
+        }
+
+        guard let data = outputData else {
+            if let serverError {
+                throw ConversionView.ConversionError.serverFailure(serverError)
+            }
+            throw ConversionView.ConversionError.conversionFailed
+        }
+
+        var filename = canonicalFilename
+        // If multi-page PDF was zipped, use .zip extension
+        if sourceFormat == .pdf && targetFormat == .image,
+           let firstTwo = data.prefix(2) as Data?,
+           firstTwo.count == 2 && firstTwo[0] == 0x50 && firstTwo[1] == 0x4B {
+            filename = conversionOutputFilename(sourceBaseName: baseName, targetExtension: "zip")
+        }
+
+        return ConversionView.ConversionResult(
+            success: true,
+            outputData: data,
+            filename: filename,
+            message: "Successfully converted to \(targetFormat.rawValue)"
+        )
+    } catch {
+        return ConversionView.ConversionResult(
+            success: false,
+            outputData: nil,
+            filename: fallbackFilename,
+            message: "Conversion failed: \(error.localizedDescription)"
+        )
+    }
+}
+
+private func conversionOutputFilename(sourceBaseName: String, targetExtension: String) -> String {
+    let normalizedBase = sourceBaseName
+        .replacingOccurrences(of: " ", with: "_")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    let safeBase = normalizedBase.isEmpty ? "converted" : normalizedBase
+    let safeExt = targetExtension.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let ext = safeExt.isEmpty ? "bin" : safeExt
+    return "\(safeBase)_\(ext).\(ext)"
+}
+
+func saveConversionResult(
+    result: ConversionView.ConversionResult,
+    documentManager: DocumentManager,
+    sourceFormat: ConversionView.DocumentFormat,
+    sourceDocument: Document?,
+    completion: @escaping () -> Void
+) {
+    guard result.success, let outputData = result.outputData else {
+        DispatchQueue.main.async { completion() }
+        return
+    }
+
+    DispatchQueue.global(qos: .userInitiated).async {
+        let documentType = conversionDocumentType(from: result.filename)
+        let latestSourceDocument = sourceDocument.flatMap { documentManager.getDocument(by: $0.id) } ?? sourceDocument
+        var content = conversionExtractContent(from: outputData, type: documentType)
+        if sourceFormat == .pdf, documentType == .docx {
+            if let source = latestSourceDocument {
+                let sourceText = source.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !sourceText.isEmpty {
+                    content = sourceText
+                }
+            }
+        }
+
+        let inheritedOCRPages = latestSourceDocument?.ocrPages
+        let ocrPages: [OCRPage]?
+        if let inheritedOCRPages, !inheritedOCRPages.isEmpty {
+            ocrPages = inheritedOCRPages
+        } else if documentType == .image || documentType == .xlsx {
+            ocrPages = nil
+        } else if documentType == .pdf {
+            ocrPages = documentManager.buildVisionOCRPages(from: outputData, type: documentType)
+                ?? buildPseudoOCRPagesFromText(content)
+        } else {
+            ocrPages = buildPseudoOCRPagesFromText(content)
+        }
+
+        let inheritedSummary = latestSourceDocument?.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summaryText: String
+        if let inheritedSummary, !inheritedSummary.isEmpty {
+            summaryText = inheritedSummary
+        } else {
+            summaryText = "Processing summary..."
+        }
+        let inheritedTags = latestSourceDocument?.tags ?? []
+        let inheritedCategory = latestSourceDocument?.category ?? .general
+        let inheritedFolderId = latestSourceDocument?.folderId
+
+        let cleanedTitle = normalizedConversionTitle(from: result.filename)
+        let document = Document(
+            title: cleanedTitle,
+            content: content,
+            summary: summaryText,
+            ocrPages: ocrPages,
+            category: inheritedCategory,
+            keywordsResume: "",
+            tags: inheritedTags,
+            sourceDocumentId: nil,
+            dateCreated: Date(),
+            folderId: inheritedFolderId,
+            type: documentType,
+            imageData: documentType == .image ? [outputData] : nil,
+            pdfData: documentType == .pdf ? outputData : nil,
+            originalFileData: outputData
+        )
+
+        DispatchQueue.main.async {
+            documentManager.addDocument(document)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                documentManager.objectWillChange.send()
+            }
+            completion()
+        }
+    }
+}
+
+func conversionDocumentType(from filename: String) -> Document.DocumentType {
+    let ext = (filename as NSString).pathExtension.lowercased()
+    switch ext {
+    case "pdf": return .pdf
+    case "docx", "doc": return .docx
+    case "ppt", "pptx": return .pptx
+    case "xls", "xlsx": return .xlsx
+    case "txt": return .text
+    case "jpg", "jpeg", "png": return .image
+    case "zip": return .zip
+    default: return .text
+    }
+}
+
+func normalizedConversionTitle(from filename: String) -> String {
+    let base = (filename as NSString).deletingPathExtension
+    let knownExts: Set<String> = ["pdf","docx","doc","ppt","pptx","xls","xlsx","txt","rtf","png","jpg","jpeg","heic","html"]
+    let ext = (base as NSString).pathExtension.lowercased()
+    let cleaned = knownExts.contains(ext) ? (base as NSString).deletingPathExtension : base
+    return cleaned
+}
+
+func conversionExtractContent(from data: Data, type: Document.DocumentType) -> String {
+    switch type {
+    case .text:
+        return String(data: data, encoding: .utf8) ?? "Converted text document"
+    case .docx:
+        if let htmlString = String(data: data, encoding: .utf8) {
+            let cleanText = htmlString
+                .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+                .replacingOccurrences(of: "&nbsp;", with: " ")
+                .replacingOccurrences(of: "&amp;", with: "&")
+                .replacingOccurrences(of: "&lt;", with: "<")
+                .replacingOccurrences(of: "&gt;", with: ">")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return cleanText.isEmpty ? "Converted Word document" : cleanText
+        }
+        return "Converted Word document"
+    case .pdf:
+        return "Converted PDF document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
+    case .image:
+        return "Converted image document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
+    case .ppt, .pptx:
+        return "Converted PowerPoint document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
+    case .xls, .xlsx:
+        return "Converted Excel document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
+    case .zip:
+        return "ZIP archive - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
+    default:
+        return "Converted document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
+    }
+}
+
+func buildPseudoOCRPagesFromText(_ text: String) -> [OCRPage]? {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty { return nil }
+    let bbox = OCRBoundingBox(x: 0.0, y: 0.0, width: 1.0, height: 1.0)
+    let block = OCRBlock(text: trimmed, confidence: 1.0, bbox: bbox, order: 0)
+    return [OCRPage(pageIndex: 0, blocks: [block])]
+}
+
+func conversionConvertToPDF(content: String, title: String) -> Data? {
+    let pageRect = CGRect(x: 0, y: 0, width: 612, height: 792)
+    let margin: CGFloat = 54
+    let contentRect = pageRect.insetBy(dx: margin, dy: margin)
+
+    let titleText = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    let bodyText = content.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    let titleFont = UIFont.systemFont(ofSize: 18, weight: .bold)
+    let bodyFont = UIFont.systemFont(ofSize: 12)
+    let paragraph = NSMutableParagraphStyle()
+    paragraph.lineSpacing = 4
+    paragraph.paragraphSpacing = 8
+
+    let attributed = NSMutableAttributedString()
+    if !titleText.isEmpty {
+        attributed.append(NSAttributedString(string: "\(titleText)\n\n", attributes: [
+            .font: titleFont,
+            .foregroundColor: UIColor.black
+        ]))
+    }
+    attributed.append(NSAttributedString(string: bodyText, attributes: [
+        .font: bodyFont,
+        .foregroundColor: UIColor.black,
+        .paragraphStyle: paragraph
+    ]))
+
+    let renderer = UIGraphicsPDFRenderer(bounds: pageRect)
+    return renderer.pdfData { context in
+        context.beginPage()
+        attributed.draw(with: contentRect, options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+    }
+}
+
+private func conversionConvertPDFToJPG(document: Document, documentManager: DocumentManager) -> Data? {
+    let rawData = documentManager.pdfData(for: document.id) ?? document.pdfData ?? document.originalFileData
+    guard let pdfData = rawData, let pdf = PDFDocument(data: pdfData), pdf.pageCount > 0 else { return nil }
+
+    let renderScale: CGFloat = 2.0
+    var jpegPages: [(String, Data)] = []
+    for idx in 0..<pdf.pageCount {
+        guard let page = pdf.page(at: idx) else { continue }
+        let pageRect = page.bounds(for: .mediaBox)
+        let imageSize = CGSize(width: max(1, pageRect.width * renderScale), height: max(1, pageRect.height * renderScale))
+        let renderer = UIGraphicsImageRenderer(size: imageSize)
+        let image = renderer.image { ctx in
+            UIColor.white.set()
+            ctx.fill(CGRect(origin: .zero, size: imageSize))
+            ctx.cgContext.saveGState()
+            ctx.cgContext.translateBy(x: 0, y: imageSize.height)
+            ctx.cgContext.scaleBy(x: renderScale, y: -renderScale)
+            page.draw(with: .mediaBox, to: ctx.cgContext)
+            ctx.cgContext.restoreGState()
+        }
+        guard let jpegData = image.jpegData(compressionQuality: 0.92) else { continue }
+        jpegPages.append(("page_\(idx + 1).jpg", jpegData))
+    }
+
+    guard !jpegPages.isEmpty else { return nil }
+
+    // Single page: return the JPG directly
+    if jpegPages.count == 1 { return jpegPages[0].1 }
+
+    // Multi-page: zip all JPGs
+    let tempRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    do {
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        for (name, data) in jpegPages {
+            try data.write(to: tempRoot.appendingPathComponent(name))
+        }
+        let zipURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".zip")
+        let success = SSZipArchive.createZipFile(atPath: zipURL.path, withContentsOfDirectory: tempRoot.path)
+        try FileManager.default.removeItem(at: tempRoot)
+        guard success else { return nil }
+        let zipData = try Data(contentsOf: zipURL)
+        try FileManager.default.removeItem(at: zipURL)
+        return zipData
+    } catch {
+        AppLogger.conversion.error("PDF to JPG zip failed: \(error.localizedDescription)")
+        try? FileManager.default.removeItem(at: tempRoot)
+        return nil
+    }
+}
+
+func conversionConvertToImage(content: String) -> Data? {
+    let size = CGSize(width: 1240, height: 1754)
+    let renderer = UIGraphicsImageRenderer(size: size)
+    let image = renderer.image { context in
+        UIColor.white.setFill()
+        context.fill(CGRect(origin: .zero, size: size))
+
+        let textRect = CGRect(x: 40, y: 40, width: size.width - 80, height: size.height - 80)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 4
+        paragraph.paragraphSpacing = 8
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 16),
+            .foregroundColor: UIColor.black,
+            .paragraphStyle: paragraph
+        ]
+        let attributed = NSAttributedString(string: content, attributes: attrs)
+        attributed.draw(with: textRect, options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+    }
+    return image.jpegData(compressionQuality: 0.92)
+}
+
+func conversionConvertImagesToPDF(_ images: [UIImage]) -> Data? {
+    guard !images.isEmpty else { return nil }
+    let renderer = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 612, height: 792))
+    return renderer.pdfData { context in
+        for image in images {
+            let bounds = CGRect(x: 0, y: 0, width: 612, height: 792)
+            context.beginPage(withBounds: bounds, pageInfo: [:])
+            let targetRect = AVMakeRect(aspectRatio: image.size, insideRect: bounds.insetBy(dx: 24, dy: 24))
+            image.draw(in: targetRect)
+        }
+    }
+}
+
+private func normalizedConversionBaseName(_ title: String) -> String {
+    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "Converted_Document" }
+    let knownExts: Set<String> = ["pdf","docx","doc","ppt","pptx","xls","xlsx","txt","rtf","png","jpg","jpeg","heic","html"]
+    var base = (trimmed as NSString).deletingPathExtension
+    let ext = (trimmed as NSString).pathExtension.lowercased()
+    if !ext.isEmpty && !knownExts.contains(ext) {
+        base = trimmed
+    }
+    return base.isEmpty ? "Converted_Document" : base
+}
+
+private enum ServerConversionMode: String {
+    case ocrEditable = "ocr"
+    case visualImage = "image"
+}
+
+private let _convertViewPinnedSession: URLSession = URLSession(configuration: .default)
+
+private func convertViaServer(
+    document: Document,
+    to targetFormat: ConversionView.DocumentFormat,
+    mode: ServerConversionMode? = nil,
+    documentManager: DocumentManager
+) -> (data: Data?, error: String?, filename: String?) {
+    AppLogger.conversion.debug("convertViaServer: doc=\(document.id) target=\(String(describing: targetFormat)) mode=\(mode?.rawValue ?? "nil")")
+    guard let inputData = documentManager.anyFileData(for: document.id) else {
+        AppLogger.conversion.error("convertViaServer: anyFileData returned nil for doc=\(document.id)")
+        return (nil, "Missing input data.", nil)
+    }
+    AppLogger.conversion.debug("convertViaServer: inputData size=\(inputData.count) bytes")
+
+    let config: ConversionConfig
+    do {
+        config = try ConversionConfig.load()
+        AppLogger.conversion.debug("convertViaServer: baseURL=\(config.baseURL)")
+    } catch {
+        AppLogger.conversion.error("convertViaServer: ConversionConfig.load() failed — \(error)")
+        return (nil, error.localizedDescription, nil)
+    }
+
+    var components = URLComponents(url: config.baseURL.appendingPathComponent("convert"), resolvingAgainstBaseURL: false)
+    var queryItems = [URLQueryItem(name: "target", value: targetFormat.fileExtension)]
+    if let mode {
+        queryItems.append(URLQueryItem(name: "mode", value: mode.rawValue))
+    }
+    components?.queryItems = queryItems
+
+    guard let url = components?.url else { return (nil, "Invalid conversion URL.", nil) }
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+    let idToken = AuthService.shared.currentIDTokenSync()
+    guard !idToken.isEmpty else {
+        AppLogger.conversion.error("convertViaServer: idToken is empty — user not signed in")
+        return (nil, "Not signed in.", nil)
+    }
+    AppLogger.conversion.debug("convertViaServer: got idToken (len=\(idToken.count)), sending request to \(String(describing: components?.url))")
+    request.setValue("Bearer \(idToken)", forHTTPHeaderField: "Authorization")
+    // Send a generic filename — the server needs an extension to name the output
+    // but sending the full document title would leak metadata in server logs.
+    request.setValue("document.\(fileExtension(for: document.type))", forHTTPHeaderField: "X-Filename")
+    request.setValue(fileExtension(for: document.type), forHTTPHeaderField: "X-File-Ext")
+    if let mode {
+        request.setValue(mode.rawValue, forHTTPHeaderField: "X-Conversion-Mode")
+    }
+    request.timeoutInterval = 180
+    let semaphore = DispatchSemaphore(value: 0)
+    var resultData: Data?
+    var errorMessage: String?
+    var responseFilename: String?
+
+    request.httpBody = inputData
+
+    let maxRetries = 2
+    let retryDelays: [TimeInterval] = [2.0, 4.0]
+    var shouldRetry = false
+
+    for attempt in 0...maxRetries {
+        if attempt > 0 {
+            Thread.sleep(forTimeInterval: retryDelays[attempt - 1])
+            AppLogger.conversion.debug("convertViaServer: retry attempt \(attempt)")
+        }
+
+        resultData = nil
+        errorMessage = nil
+        responseFilename = nil
+        shouldRetry = false
+
+        let semaphore = DispatchSemaphore(value: 0)
+        let task = _convertViewPinnedSession.dataTask(with: request) { data, response, error in
+            defer { semaphore.signal() }
+            if let error {
+                AppLogger.conversion.error("convertViaServer: network error — \(error)")
+                errorMessage = error.localizedDescription
+                return
+            }
+            guard let http = response as? HTTPURLResponse else {
+                AppLogger.conversion.error("convertViaServer: response is not HTTPURLResponse")
+                errorMessage = "No response from server."
+                return
+            }
+            AppLogger.conversion.debug("convertViaServer: HTTP \(http.statusCode)")
+            if http.statusCode == 200 {
+                resultData = data
+                if let headerValue = http.allHeaderFields.first(where: { key, _ in
+                    String(describing: key).lowercased() == "content-disposition"
+                })?.value as? String {
+                    responseFilename = ContentDisposition.filename(from: headerValue)
+                }
+                return
+            }
+            if http.statusCode == 503 && attempt < maxRetries {
+                AppLogger.conversion.debug("convertViaServer: 503 — will retry (attempt \(attempt))")
+                shouldRetry = true
+                return
+            }
+            if let data, data.isEmpty == false, let text = String(data: data, encoding: .utf8) {
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let lower = trimmed.lowercased()
+                if lower.hasPrefix("<html") || lower.hasPrefix("<!doctype") {
+                    errorMessage = "Server error (\(http.statusCode)). Please try again later."
+                } else if (lower.contains("libreoffice") || lower.contains("libre_office")) && attempt < maxRetries {
+                    AppLogger.conversion.debug("convertViaServer: \(trimmed) — will retry (attempt \(attempt))")
+                    shouldRetry = true
+                    return
+                } else {
+                    errorMessage = trimmed
+                }
+                return
+            }
+            errorMessage = "Server error (HTTP \(http.statusCode))."
+        }
+        task.resume()
+        _ = semaphore.wait(timeout: .now() + 180)
+        AppLogger.conversion.debug("convertViaServer: semaphore released — resultData=\(resultData != nil) errorMessage=\(errorMessage ?? "nil")")
+
+        if !shouldRetry { break }
+    }
+
+    if resultData == nil && errorMessage == nil {
+        errorMessage = "No response from server (timeout or network issue)."
+    }
+    return (resultData, errorMessage, responseFilename)
+}
+
+private func conversionConvertPDFToImageDOCX(document: Document, baseName: String, documentManager: DocumentManager) -> Data? {
+    guard let inputData = documentManager.originalFileData(for: document.id) ?? documentManager.pdfData(for: document.id),
+          let pdf = PDFDocument(data: inputData),
+          pdf.pageCount > 0 else {
+        return nil
+    }
+
+    let tempRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("docx-image-\(UUID().uuidString)", isDirectory: true)
+    let wordDir = tempRoot.appendingPathComponent("word", isDirectory: true)
+    let relsDir = tempRoot.appendingPathComponent("_rels", isDirectory: true)
+    let wordRelsDir = wordDir.appendingPathComponent("_rels", isDirectory: true)
+    let mediaDir = wordDir.appendingPathComponent("media", isDirectory: true)
+
+    do {
+        try FileManager.default.createDirectory(at: mediaDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: relsDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: wordRelsDir, withIntermediateDirectories: true)
+    } catch {
+        return nil
+    }
+
+    struct DocxImageRef {
+        let filename: String
+        let widthEMU: Int
+        let heightEMU: Int
+    }
+
+    var imageRefs: [DocxImageRef] = []
+    for idx in 0..<pdf.pageCount {
+        guard let page = pdf.page(at: idx) else { continue }
+        let pageRect = page.bounds(for: .mediaBox)
+        let renderScale: CGFloat = 2.0
+        let imageSize = CGSize(
+            width: max(1, pageRect.width * renderScale),
+            height: max(1, pageRect.height * renderScale)
+        )
+        let renderer = UIGraphicsImageRenderer(size: imageSize)
+        let image = renderer.image { ctx in
+            UIColor.white.set()
+            ctx.fill(CGRect(origin: .zero, size: imageSize))
+            ctx.cgContext.saveGState()
+            ctx.cgContext.translateBy(x: 0, y: imageSize.height)
+            ctx.cgContext.scaleBy(x: 1.0, y: -1.0)
+            ctx.cgContext.scaleBy(x: renderScale, y: renderScale)
+            page.draw(with: .mediaBox, to: ctx.cgContext)
+            ctx.cgContext.restoreGState()
+        }
+        guard let imageData = image.jpegData(compressionQuality: 0.92) else { continue }
+        let filename = "image\(idx + 1).jpg"
+        let imageURL = mediaDir.appendingPathComponent(filename)
+        do {
+            try imageData.write(to: imageURL)
+        } catch {
+            continue
+        }
+
+        let emuPerPoint = 12700.0
+        let widthEMU = Int(pageRect.width * emuPerPoint)
+        let heightEMU = Int(pageRect.height * emuPerPoint)
+        imageRefs.append(DocxImageRef(filename: filename, widthEMU: widthEMU, heightEMU: heightEMU))
+    }
+
+    guard !imageRefs.isEmpty else {
+        do { try FileManager.default.removeItem(at: tempRoot) } catch { AppLogger.conversion.warning("Failed to remove temp root: \(error.localizedDescription)") }
+        return nil
+    }
+
+    let contentTypes = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+      <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+      <Default Extension="xml" ContentType="application/xml"/>
+      <Default Extension="jpg" ContentType="image/jpeg"/>
+      <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+    </Types>
+    """
+
+    let packageRels = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+      <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+    </Relationships>
+    """
+
+    var docRels = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+    """
+    for (idx, ref) in imageRefs.enumerated() {
+        docRels += """
+        
+          <Relationship Id="rId\(idx + 1)" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/\(ref.filename)"/>
+        """
+    }
+    docRels += "\n</Relationships>"
+
+    var body = ""
+    for (idx, ref) in imageRefs.enumerated() {
+        body += """
+        
+            <w:p>
+              <w:r>
+                <w:drawing>
+                  <wp:inline distT="0" distB="0" distL="0" distR="0" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">
+                    <wp:extent cx="\(ref.widthEMU)" cy="\(ref.heightEMU)"/>
+                    <wp:docPr id="\(idx + 1)" name="Picture \(idx + 1)"/>
+                    <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                      <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                        <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                          <pic:nvPicPr>
+                            <pic:cNvPr id="\(idx + 1)" name="\(ref.filename)"/>
+                            <pic:cNvPicPr/>
+                          </pic:nvPicPr>
+                          <pic:blipFill>
+                            <a:blip r:embed="rId\(idx + 1)"/>
+                            <a:stretch><a:fillRect/></a:stretch>
+                          </pic:blipFill>
+                          <pic:spPr>
+                            <a:xfrm>
+                              <a:off x="0" y="0"/>
+                              <a:ext cx="\(ref.widthEMU)" cy="\(ref.heightEMU)"/>
+                            </a:xfrm>
+                            <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+                          </pic:spPr>
+                        </pic:pic>
+                      </a:graphicData>
+                    </a:graphic>
+                  </wp:inline>
+                </w:drawing>
+              </w:r>
+            </w:p>
+        """
+    }
+
+    let documentXML = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <w:document
+      xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas"
+      xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+      xmlns:o="urn:schemas-microsoft-com:office:office"
+      xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+      xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"
+      xmlns:v="urn:schemas-microsoft-com:vml"
+      xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing"
+      xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+      xmlns:w10="urn:schemas-microsoft-com:office:word"
+      xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+      xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"
+      xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"
+      xmlns:wpi="http://schemas.microsoft.com/office/word/2010/wordprocessingInk"
+      xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml"
+      xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+      xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+      xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"
+      mc:Ignorable="w14 wp14">
+      <w:body>\(body)
+        <w:sectPr>
+          <w:pgSz w:w="12240" w:h="15840"/>
+          <w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="708" w:footer="708" w:gutter="0"/>
+        </w:sectPr>
+      </w:body>
+    </w:document>
+    """
+
+    let contentTypesURL = tempRoot.appendingPathComponent("[Content_Types].xml")
+    let packageRelsURL = relsDir.appendingPathComponent(".rels")
+    let docRelsURL = wordRelsDir.appendingPathComponent("document.xml.rels")
+    let docXMLURL = wordDir.appendingPathComponent("document.xml")
+
+    do {
+        try contentTypes.write(to: contentTypesURL, atomically: true, encoding: .utf8)
+        try packageRels.write(to: packageRelsURL, atomically: true, encoding: .utf8)
+        try docRels.write(to: docRelsURL, atomically: true, encoding: .utf8)
+        try documentXML.write(to: docXMLURL, atomically: true, encoding: .utf8)
+    } catch {
+        do { try FileManager.default.removeItem(at: tempRoot) } catch { AppLogger.conversion.warning("Failed to remove temp root after error: \(error.localizedDescription)") }
+        return nil
+    }
+
+    let zipURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("\(baseName)_image.docx")
+    do { try FileManager.default.removeItem(at: zipURL) } catch { AppLogger.conversion.warning("Failed to remove pre-existing zip file: \(error.localizedDescription)") }
+    let success = SSZipArchive.createZipFile(atPath: zipURL.path, withContentsOfDirectory: tempRoot.path)
+    defer {
+        do { try FileManager.default.removeItem(at: tempRoot) } catch { AppLogger.conversion.warning("Failed to remove temp root in defer: \(error.localizedDescription)") }
+        do { try FileManager.default.removeItem(at: zipURL) } catch { AppLogger.conversion.warning("Failed to remove zip file in defer: \(error.localizedDescription)") }
+    }
+    guard success else { return nil }
+    do {
+        return try Data(contentsOf: zipURL)
+    } catch {
+        AppLogger.conversion.error("Failed to read DOCX zip data: \(error.localizedDescription)")
+        return nil
+    }
+}
