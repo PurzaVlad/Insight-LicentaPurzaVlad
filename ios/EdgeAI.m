@@ -20,6 +20,8 @@ RCT_EXTERN_METHOD(getModelConsentState:(RCTPromiseResolveBlock)resolve
 
 RCT_EXTERN_METHOD(setModelReady:(BOOL)ready)
 
+RCT_EXTERN_METHOD(setDownloadProgress:(double)progress)
+
 @end
 
 @interface RCT_EXTERN_MODULE(NativeChatViewManager, RCTViewManager)

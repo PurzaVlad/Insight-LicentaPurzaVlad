@@ -116,6 +116,17 @@ class EdgeAI: RCTEventEmitter {
         resolve(["consented": consented, "declined": declined])
     }
 
+    @objc func setDownloadProgress(_ progress: Double) {
+        let post = {
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ModelDownloadProgress"),
+                object: nil,
+                userInfo: ["progress": progress]
+            )
+        }
+        if Thread.isMainThread { post() } else { DispatchQueue.main.async { post() } }
+    }
+
     @objc(setModelReady:)
     func setModelReady(_ ready: Bool) {
         let applyReadyState = {

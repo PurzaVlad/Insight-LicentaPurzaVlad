@@ -63,7 +63,6 @@ struct ZipExportView: View {
                                 onRename: {},
                                 onMoveToFolder: {},
                                 onDelete: {},
-                                onConvert: {},
                                 onShare: {}
                             )
                             .tag(ZipSelectionID.document(document.id))

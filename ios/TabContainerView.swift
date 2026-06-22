@@ -103,6 +103,7 @@ struct TabContainerView: View {
     @AppStorage("pendingToolsDeepLink") private var pendingToolsDeepLink = ""
     @AppStorage("pendingConvertDeepLink") private var pendingConvertDeepLink = ""
     @State private var isInitialStartupLoadingVisible = true
+    @State private var modelDownloadProgress: Double = 0
     private let modelWasReadyAtLaunch = UserDefaults.standard.bool(forKey: "modelReady")
     @State private var hasPassedStartupGate = false
     @State private var startupLoadingReadyPollToken: Int = 0
@@ -183,7 +184,7 @@ struct TabContainerView: View {
             }
 
             if isInitialStartupLoadingVisible {
-                LoadingScreenView(isModelInstalling: !modelWasReadyAtLaunch)
+                LoadingScreenView(isModelInstalling: !modelWasReadyAtLaunch, downloadProgress: modelDownloadProgress)
                     .transition(.opacity)
                     .ignoresSafeArea()
                     .zIndex(10)
@@ -237,6 +238,10 @@ struct TabContainerView: View {
             } else {
                 startInitialStartupLoadingIfNeeded()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ModelDownloadProgress"))) { notification in
+            guard let progress = notification.userInfo?["progress"] as? Double else { return }
+            modelDownloadProgress = progress
         }
         .onChange(of: appThemeRaw) { _ in
             applyUserInterfaceStyle()

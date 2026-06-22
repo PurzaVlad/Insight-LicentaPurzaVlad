@@ -849,7 +849,6 @@ struct SmartViewDocumentsView: View {
                                     documentToDelete = document
                                     showingDeleteConfirm = true
                                 },
-                                onConvert: {},
                                 onShare: { shareDocument(document) },
                                 onLongPress: {
                                     if !isSelectionMode { isSelectionMode = true }
@@ -872,6 +871,7 @@ struct SmartViewDocumentsView: View {
                             isSelectionMode: true,
                             usesNativeSelection: true,
                             onSelectToggle: { toggleSelection(document.id) },
+                            showsMoveToFolder: false,
                             onOpen: { onOpenDocument(document) },
                             onRename: {},
                             onMoveToFolder: {},
@@ -879,7 +879,6 @@ struct SmartViewDocumentsView: View {
                                 documentToDelete = document
                                 showingDeleteConfirm = true
                             },
-                            onConvert: {},
                             onShare: { shareDocument(document) }
                         )
                         .tag(document.id)
@@ -902,6 +901,7 @@ struct SmartViewDocumentsView: View {
                                 isSelectionMode: false,
                                 usesNativeSelection: false,
                                 onSelectToggle: { toggleSelection(document.id) },
+                                showsMoveToFolder: false,
                                 onOpen: { onOpenDocument(document) },
                                 onRename: {},
                                 onMoveToFolder: {},
@@ -909,7 +909,6 @@ struct SmartViewDocumentsView: View {
                                     documentToDelete = document
                                     showingDeleteConfirm = true
                                 },
-                                onConvert: {},
                                 onShare: { shareDocument(document) }
                             )
                             .padding(.horizontal, 8)

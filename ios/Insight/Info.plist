@@ -25,18 +25,20 @@
 		<dict>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>com.googleusercontent.apps.465197966526-f2o5l85pcig2feglk2ek1dj2lmn0qeh4</string>
+				<string>com.googleusercontent.apps.465197966526-0o33hipsqrd2rucjrr7hckggki67svv7</string>
 			</array>
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>CONVERT_BASE_URL</key>
-	<string>https://conver-server-6k7g4ts3rq-ew.a.run.app</string>
+	<string>https://conver-server-465197966526.europe-west1.run.app</string>
 	<key>GIDClientID</key>
-	<string>465197966526-f2o5l85pcig2feglk2ek1dj2lmn0qeh4.apps.googleusercontent.com</string>
+	<string>465197966526-0o33hipsqrd2rucjrr7hckggki67svv7.apps.googleusercontent.com</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

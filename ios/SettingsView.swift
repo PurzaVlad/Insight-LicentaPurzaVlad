@@ -24,6 +24,7 @@ struct SettingsView: View {
     @AppStorage("appTheme") private var appThemeRaw = AppTheme.system.rawValue
     @AppStorage("useFaceID") private var useFaceID = false
     @AppStorage("hasSeenModelConsent") private var hasSeenModelConsent = false
+    @AppStorage("useLibreOfficeEngine") private var useLibreOfficeEngine = false
     @State private var isFaceIDAvailable = false
     @State private var faceIDStatusText = ""
     @State private var showingFaceIDError = false
@@ -129,6 +130,18 @@ struct SettingsView: View {
                         }
                         .disabled(isDeletingAccount)
                     }
+                }
+
+                Section(header: Text("Conversion")) {
+                    Toggle(isOn: $useLibreOfficeEngine) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Privacy-preserving mode")
+                            Text("Files are processed on our server only — no data sent to third-party services.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .tint(Color("Primary"))
                 }
 
                 Section(header: Text("Privacy")) {

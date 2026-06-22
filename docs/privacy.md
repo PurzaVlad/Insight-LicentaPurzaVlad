@@ -40,7 +40,7 @@ Insight includes an optional file conversion feature (e.g. converting DOCX to PD
 - Conversion is a user-initiated action; no files are sent without your explicit request
 
 ### 2.4 On-Device AI Model
-The AI model (approximately 800 MB) is downloaded from a public model repository (Hugging Face) upon your explicit consent during first-time setup. The model file is stored locally and never re-uploaded.
+The AI model (approximately 1,2 GB) is downloaded from a public model repository (Hugging Face) upon your explicit consent during first-time setup. The model file is stored locally and never re-uploaded.
 
 ### 2.5 Usage Data
 We do not currently collect analytics or usage telemetry.

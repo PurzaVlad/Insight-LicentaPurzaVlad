@@ -328,7 +328,6 @@ private struct ToolsPDFPickerView: View {
                         onRename: {},
                         onMoveToFolder: {},
                         onDelete: {},
-                        onConvert: {},
                         onShare: {}
                     )
                     .listRowBackground(Color.clear)

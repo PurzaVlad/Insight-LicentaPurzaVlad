@@ -121,7 +121,6 @@ struct NativeDocumentGridView: UIViewRepresentable {
     let onRenameDocument: (Document) -> Void
     let onMoveDocument: (Document) -> Void
     let onDeleteDocument: (Document) -> Void
-    let onConvertDocument: (Document) -> Void
     let onShareDocuments: ([Document]) -> Void
     let onRenameFolderRequest: (DocumentFolder) -> Void
     let onMoveFolderRequest: (DocumentFolder) -> Void
@@ -328,7 +327,6 @@ struct NativeDocumentGridView: UIViewRepresentable {
                         UIAction(title: "Share", image: UIImage(systemName: "square.and.arrow.up")) { _ in self.parent.onShareDocuments([doc]) },
                         UIAction(title: "Rename", image: UIImage(systemName: "pencil")) { _ in self.parent.onRenameDocument(doc) },
                         UIAction(title: "Move to folder", image: UIImage(systemName: "folder")) { _ in self.parent.onMoveDocument(doc) },
-                        UIAction(title: "Convert", image: UIImage(systemName: "arrow.2.circlepath")) { _ in self.parent.onConvertDocument(doc) },
                         UIAction(title: "Delete", image: UIImage(systemName: "trash"), attributes: .destructive) { _ in self.parent.onDeleteDocument(doc) }
                     ])
                 case .folder(let folder):

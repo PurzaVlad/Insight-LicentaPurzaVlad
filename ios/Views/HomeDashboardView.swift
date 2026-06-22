@@ -105,7 +105,6 @@ struct HomeDashboardView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 greetingSection
-                statsSection
                 upcomingExpirationsSection
                 recentSection
                 browseSection
@@ -136,26 +135,6 @@ struct HomeDashboardView: View {
         case 12..<17: return "Good afternoon"
         case 17..<22: return "Good evening"
         default: return "Good night"
-        }
-    }
-
-    // MARK: - Stats
-
-    private var statsSection: some View {
-        let docs = documentManager.documents
-        let total = docs.count
-        let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
-        let thisWeek = docs.filter { $0.dateCreated > weekAgo }.count
-        let sensitive = docs.filter { !$0.sensitiveFlags.isEmpty }.count
-        return HStack(spacing: 12) {
-            DashboardStatCard(value: "\(total)", label: "Total", icon: "doc.on.doc.fill", color: Color("Primary"))
-            DashboardStatCard(value: "\(thisWeek)", label: "This Week", icon: "calendar", color: .green)
-            DashboardStatCard(
-                value: "\(sensitive)",
-                label: "Sensitive",
-                icon: "exclamationmark.shield.fill",
-                color: sensitive > 0 ? .orange : Color(.tertiaryLabel)
-            )
         }
     }
 
@@ -366,7 +345,7 @@ struct HomeDashboardView: View {
             BrowseGroup(title: "All Documents") {
                 let total = documentManager.documents.count
                 NavigationLink {
-                    SmartViewDocumentsView(title: "All Documents", filter: nil, onOpenDocument: openDocument)
+                    DocumentsView(onOpenPreview: onOpenPreview, onShowSummary: onShowSummary, isEmbedded: true)
                         .environmentObject(documentManager)
                 } label: {
                     BrowseRow(name: "All Documents", icon: "doc.on.doc.fill", iconColor: Color("Primary"), count: total)
@@ -610,34 +589,6 @@ struct HomeDashboardView: View {
             self.isProcessing = false
             self.showingNamingDialog = true
         }
-    }
-}
-
-// MARK: - DashboardStatCard
-
-private struct DashboardStatCard: View {
-    let value: String
-    let label: String
-    let icon: String
-    let color: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Image(systemName: icon)
-                .foregroundColor(color)
-                .font(.system(size: 18, weight: .semibold))
-            Text(value)
-                .font(.system(size: 26, weight: .bold, design: .rounded))
-                .foregroundColor(.primary)
-            Text(label)
-                .font(.system(size: 12))
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(Color(.secondarySystemGroupedBackground))
-        .cornerRadius(14)
     }
 }
 

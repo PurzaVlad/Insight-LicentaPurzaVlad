@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LoadingScreenView: View {
     var isModelInstalling: Bool = false
+    var downloadProgress: Double = 0
     @Environment(\.colorScheme) private var colorScheme
     @State private var circleOffset: CGFloat = 16.3
 
@@ -33,10 +34,30 @@ struct LoadingScreenView: View {
                     }
 
                 if isModelInstalling {
-                    Text("We are setting everything up for you...")
-                        .font(.system(size: 15, weight: .regular))
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
+                    if downloadProgress > 0 && downloadProgress < 1.0 {
+                        VStack(spacing: 8) {
+                            ProgressView(value: downloadProgress)
+                                .progressViewStyle(.linear)
+                                .tint(Color("Primary"))
+                                .frame(width: 220)
+                            Text("\(Int(downloadProgress * 100))%")
+                                .font(.system(size: 13, weight: .regular))
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if downloadProgress >= 1.0 {
+                        VStack(spacing: 8) {
+                            ProgressView()
+                                .tint(Color("Primary"))
+                            Text("Initializing model…")
+                                .font(.system(size: 13, weight: .regular))
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("We are setting everything up for you...")
+                            .font(.system(size: 15, weight: .regular))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
                 }
             }
         }

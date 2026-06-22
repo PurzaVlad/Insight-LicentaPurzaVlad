@@ -137,22 +137,7 @@ struct MixedItem: Identifiable {
     let dateCreated: Date
 }
 
-private func makeDocumentDragProvider(_ id: UUID) -> NSItemProvider {
-    let provider = NSItemProvider()
-    let text = id.uuidString
-    provider.registerDataRepresentation(forTypeIdentifier: UTType.plainText.identifier, visibility: .all) { completion in
-        completion(text.data(using: .utf8), nil)
-        return nil
-    }
-    provider.registerDataRepresentation(forTypeIdentifier: UTType.data.identifier, visibility: .all) { completion in
-        completion(text.data(using: .utf8), nil)
-        return nil
-    }
-    provider.registerObject(text as NSString, visibility: .all)
-    return provider
-}
-
-private func makeFolderDragProvider(_ id: UUID) -> NSItemProvider {
+private func makeDragProvider(for id: UUID) -> NSItemProvider {
     let provider = NSItemProvider()
     let text = id.uuidString
     provider.registerDataRepresentation(forTypeIdentifier: UTType.plainText.identifier, visibility: .all) { completion in
@@ -185,7 +170,7 @@ struct DocumentsView: View {
     @State private var pendingCategory: Document.DocumentCategory = .general
     @State private var pendingKeywordsResume: String = ""
     @State private var isOpeningPreview = false
-    @State private var navigationPath: [DocumentFolder] = []
+    @State private var activeFolderForRoot: DocumentFolder? = nil
     @State private var showingRenameDialog = false
     @State private var renameText = ""
     @State private var documentToRename: Document?
@@ -406,7 +391,7 @@ struct DocumentsView: View {
                 onSelectToggle: { toggleFolderSelection(folder.id) },
                 onOpen: {
                     documentManager.updateLastAccessed(id: folder.id)
-                    navigationPath.append(folder)
+                    activeFolderForRoot = folder
                 },
                 onRename: {
                     folderToRename = folder
@@ -424,7 +409,7 @@ struct DocumentsView: View {
                 isDropTargeted: dropTargetedFolderId == folder.id
             )
             .padding(.horizontal, 8)
-            .onDrag { makeFolderDragProvider(folder.id) }
+            .onDrag { makeDragProvider(for: folder.id) }
             .onDrop(
                 of: [UTType.plainText, UTType.text, UTType.data],
                 delegate: ListFolderDropDelegate(
@@ -446,11 +431,10 @@ struct DocumentsView: View {
                     documentToMove = document
                 },
                 onDelete: { deleteDocument(document) },
-                onConvert: { convertDocument(document) },
                 onShare: { shareDocuments([document]) }
             )
             .padding(.horizontal, 8)
-            .onDrag { makeDocumentDragProvider(document.id) }
+            .onDrag { makeDragProvider(for: document.id) }
         }
     }
 
@@ -467,7 +451,7 @@ struct DocumentsView: View {
                 onSelectToggle: { toggleFolderSelection(folder.id) },
                 onOpen: {
                     documentManager.updateLastAccessed(id: folder.id)
-                    navigationPath.append(folder)
+                    activeFolderForRoot = folder
                 },
                 onRename: {
                     folderToRename = folder
@@ -501,7 +485,6 @@ struct DocumentsView: View {
                     documentToMove = document
                 },
                 onDelete: { deleteDocument(document) },
-                onConvert: { convertDocument(document) },
                 onShare: { shareDocuments([document]) }
             )
             .tag(document.id)
@@ -523,12 +506,11 @@ struct DocumentsView: View {
                     onOpenDocument: { openDocumentPreview(document: $0) },
                     onOpenFolder: { folder in
                         documentManager.updateLastAccessed(id: folder.id)
-                        navigationPath.append(folder)
+                        activeFolderForRoot = folder
                     },
                     onRenameDocument: { renameDocument($0) },
                     onMoveDocument: { documentToMove = $0 },
                     onDeleteDocument: { deleteDocument($0) },
-                    onConvertDocument: { convertDocument($0) },
                     onShareDocuments: { shareDocuments($0) },
                     onRenameFolderRequest: { folder in
                         folderToRename = folder
@@ -561,7 +543,7 @@ struct DocumentsView: View {
                             onSelectToggle: { toggleFolderSelection(folder.id) },
                             onOpen: {
                                 documentManager.updateLastAccessed(id: folder.id)
-                                navigationPath.append(folder)
+                                activeFolderForRoot = folder
                             },
                             onRename: {
                                 folderToRename = folder
@@ -581,7 +563,7 @@ struct DocumentsView: View {
                                 beginSelection(folderId: folder.id)
                             }
                         )
-                        .onDrag { makeFolderDragProvider(folder.id) }
+                        .onDrag { makeDragProvider(for: folder.id) }
                         .onDrop(
                             of: [UTType.plainText, UTType.text, UTType.data],
                             delegate: FolderDropDelegate(
@@ -602,13 +584,12 @@ struct DocumentsView: View {
                             onRename: { renameDocument(document) },
                             onMoveToFolder: { documentToMove = document },
                             onDelete: { deleteDocument(document) },
-                            onConvert: { convertDocument(document) },
                             onShare: { shareDocuments([document]) },
                             onLongPress: {
                                 beginSelection(documentId: document.id)
                             }
                         )
-                        .onDrag { makeDocumentDragProvider(document.id) }
+                        .onDrag { makeDragProvider(for: document.id) }
                     }
                 }
             }
@@ -810,10 +791,9 @@ struct DocumentsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemGroupedBackground).ignoresSafeArea())
-        .navigationDestination(for: DocumentFolder.self) { folder in
+        .navigationDestination(item: $activeFolderForRoot) { folder in
             FolderDocumentsView(
                 folder: folder,
-                navigationPath: $navigationPath,
                 onOpenDocument: openDocumentPreview,
                 onSelectionModeChange: { isActive in
                     isFolderSelectionModeActive = isActive
@@ -837,257 +817,208 @@ struct DocumentsView: View {
     }
 
     var body: some View {
-        Group {
-            if isEmbedded {
-                documentsCoreContent
-            } else {
-                NavigationStack(path: $navigationPath) {
-                    documentsCoreContent
-                }
-            }
-        }
-        .tabBarVisibility(shouldHideTabBar)
-        .tabBarHiddenCompat(shouldHideTabBar)
-        .bindGlobalOperationLoading(isProcessing || isOpeningPreview)
-        .sheet(isPresented: $showingSettings) {
-            SettingsView()
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-                .modifier(SettingsSheetBackgroundModifier())
-        }
-        .sheet(isPresented: $showingSmartViews) {
-            SmartViewsListView(
-                onOpenPreview: { doc, url in
-                    pendingSmartViewDocument = doc
-                    showingSmartViews = false
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                        onOpenPreview(doc, url)
-                    }
-                },
-                onShowSummary: { doc in
-                    pendingSmartViewDocument = doc
-                    showingSmartViews = false
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                        onShowSummary(doc)
-                    }
-                }
-            )
-            .environmentObject(documentManager)
-        }
-        .onChange(of: isSelectionMode) { active in
-            editMode = active ? .active : .inactive
-        }
-        .onChange(of: navigationPath.last?.id) { folderId in
-            if folderId == nil {
-                isFolderSelectionModeActive = false
-            }
-        }
-        .alert("New Folder", isPresented: $showingNewFolderDialog) {
-            TextField("Folder name", text: $newFolderName)
-            TextField("Topic (optional)", text: $newFolderDescription)
-            Button("Create") {
-                let desc = newFolderDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-                documentManager.createFolder(name: newFolderName, description: desc.isEmpty ? nil : desc)
-                newFolderDescription = ""
-            }
-            Button("Cancel", role: .cancel) { newFolderDescription = "" }
-        } message: {
-            Text("Enter a name for the folder")
-        }
-        .alert("Rename Folder", isPresented: $showingRenameFolderDialog) {
-            TextField("Folder name", text: $renameFolderText)
-            Button("Rename") {
-                guard let folder = folderToRename else { return }
-                documentManager.renameFolder(folderId: folder.id, to: renameFolderText)
-                folderToRename = nil
-            }
-            Button("Cancel", role: .cancel) { folderToRename = nil }
-        } message: {
-            Text("Enter a new name for the folder")
-        }
-        .confirmationDialog("Delete Folder", isPresented: $showingDeleteFolderDialog, presenting: folderToDelete) { folder in
-            Button("Delete all items", role: .destructive) {
-                documentManager.deleteFolder(folderId: folder.id, mode: .deleteAllItems)
-                folderToDelete = nil
-            }
+        withDocumentPresentations
+    }
 
-            let parentName = documentManager.folderName(for: folder.parentId) ?? "On My iPhone"
-            Button("Move items to \"\(parentName)\"", role: .destructive) {
-                documentManager.deleteFolder(folderId: folder.id, mode: .moveItemsToParent)
-                folderToDelete = nil
-            }
+    private var coreStack: some View {
+        documentsCoreContent
+            .tabBarVisibility(shouldHideTabBar)
+            .tabBarHiddenCompat(shouldHideTabBar)
+            .bindGlobalOperationLoading(isProcessing || isOpeningPreview)
+    }
 
-            Button("Cancel", role: .cancel) { folderToDelete = nil }
-        } message: { folder in
-            Text("Choose what to do with items inside \"\(folder.name)\".")
-        }
-        .confirmationDialog("Delete Selected Items", isPresented: $showingBulkDeleteDialog) {
-            Button("Delete", role: .destructive) {
-                deleteSelectedItems()
+    private var withFolderPresentations: some View {
+        coreStack
+            .sheet(isPresented: $showingSettings) {
+                SettingsView()
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+                    .modifier(SettingsSheetBackgroundModifier())
             }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This will delete all selected items and their contents.")
-        }
-        .sheet(isPresented: $showingBulkMoveSheet) {
-            BulkMoveSheet(
-                folders: documentManager.folders,
-                currentParentId: nil,
-                onSelectParent: { parentId in
-                    moveSelectedItems(to: parentId)
-                    showingBulkMoveSheet = false
-                },
-                onCancel: {
-                    showingBulkMoveSheet = false
-                }
-            )
-        }
-        .sheet(isPresented: $showingMoveFolderSheet) {
-            if let folder = folderToMove {
-                let invalid = documentManager.descendantFolderIds(of: folder.id).union([folder.id])
-                MoveFolderSheet(
-                    folder: folder,
-                    folders: documentManager.folders.filter { !invalid.contains($0.id) },
-                    currentParentId: folder.parentId,
-                    onSelectParent: { parentId in
-                        documentManager.moveFolder(folderId: folder.id, toParent: parentId)
-                        folderToMove = nil
-                        showingMoveFolderSheet = false
+            .sheet(isPresented: $showingSmartViews) {
+                SmartViewsListView(
+                    onOpenPreview: { doc, url in
+                        showingSmartViews = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { onOpenPreview(doc, url) }
                     },
-                    onCancel: {
-                        folderToMove = nil
-                        showingMoveFolderSheet = false
+                    onShowSummary: { doc in
+                        showingSmartViews = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { onShowSummary(doc) }
                     }
                 )
-            }
-        }
-        .sheet(item: $documentToMove) { doc in
-            MoveToFolderSheet(
-                document: doc,
-                folders: documentManager.folders(in: nil),
-                currentFolderId: doc.folderId,
-                allFolders: documentManager.folders,
-                currentContainerName: "Documents",
-                allowRootSelection: true,
-                onSelectFolder: { folderId in
-                    documentManager.moveDocument(documentId: doc.id, toFolder: folderId)
-                    documentToMove = nil
-                },
-                onCancel: {
-                    documentToMove = nil
-                }
-            )
-        }
-        .sheet(isPresented: $showingDocumentPicker) {
-            DocumentPicker { urls in
-                processImportedFiles(urls)
-            }
-        }
-        .sheet(isPresented: $showingZipExportSheet) {
-            ZipExportView(
-                preselectedDocumentIds: selectedDocumentIds,
-                preselectedFolderIds: selectedFolderIds
-            )
                 .environmentObject(documentManager)
-        }
-        .alert("ZIP Name", isPresented: $showingQuickZipNamePrompt) {
-            TextField("Archive name", text: $quickZipName)
-            Button("Create") {
-                let trimmed = quickZipName.trimmingCharacters(in: .whitespacesAndNewlines)
-                if trimmed.isEmpty {
-                    quickZipAlertMessage = "Please enter a name."
-                    showingQuickZipAlert = true
+            }
+            .onChange(of: isSelectionMode) { _, active in
+                editMode = active ? .active : .inactive
+            }
+            .onChange(of: activeFolderForRoot) { _, folder in
+                if folder == nil { isFolderSelectionModeActive = false }
+            }
+            .alert("New Folder", isPresented: $showingNewFolderDialog) {
+                TextField("Folder name", text: $newFolderName)
+                TextField("Topic (optional)", text: $newFolderDescription)
+                Button("Create") {
+                    let desc = newFolderDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                    documentManager.createFolder(name: newFolderName, description: desc.isEmpty ? nil : desc)
+                    newFolderDescription = ""
+                }
+                Button("Cancel", role: .cancel) { newFolderDescription = "" }
+            } message: { Text("Enter a name for the folder") }
+            .alert("Rename Folder", isPresented: $showingRenameFolderDialog) {
+                TextField("Folder name", text: $renameFolderText)
+                Button("Rename") {
+                    guard let folder = folderToRename else { return }
+                    documentManager.renameFolder(folderId: folder.id, to: renameFolderText)
+                    folderToRename = nil
+                }
+                Button("Cancel", role: .cancel) { folderToRename = nil }
+            } message: { Text("Enter a new name for the folder") }
+            .confirmationDialog("Delete Folder", isPresented: $showingDeleteFolderDialog, presenting: folderToDelete) { folder in
+                Button("Delete all items", role: .destructive) {
+                    documentManager.deleteFolder(folderId: folder.id, mode: .deleteAllItems)
+                    folderToDelete = nil
+                }
+                let parentName = documentManager.folderName(for: folder.parentId) ?? "On My iPhone"
+                Button("Move items to \"\(parentName)\"", role: .destructive) {
+                    documentManager.deleteFolder(folderId: folder.id, mode: .moveItemsToParent)
+                    folderToDelete = nil
+                }
+                Button("Cancel", role: .cancel) { folderToDelete = nil }
+            } message: { folder in Text("Choose what to do with items inside \"\(folder.name)\".") }
+            .confirmationDialog("Delete Selected Items", isPresented: $showingBulkDeleteDialog) {
+                Button("Delete", role: .destructive) { deleteSelectedItems() }
+                Button("Cancel", role: .cancel) {}
+            } message: { Text("This will delete all selected items and their contents.") }
+            .sheet(isPresented: $showingBulkMoveSheet) {
+                BulkMoveSheet(
+                    folders: documentManager.folders,
+                    currentParentId: nil,
+                    onSelectParent: { parentId in
+                        moveSelectedItems(to: parentId)
+                        showingBulkMoveSheet = false
+                    },
+                    onCancel: { showingBulkMoveSheet = false }
+                )
+            }
+            .sheet(isPresented: $showingMoveFolderSheet) {
+                if let folder = folderToMove {
+                    let invalid = documentManager.descendantFolderIds(of: folder.id).union([folder.id])
+                    MoveFolderSheet(
+                        folder: folder,
+                        folders: documentManager.folders.filter { !invalid.contains($0.id) },
+                        currentParentId: folder.parentId,
+                        onSelectParent: { parentId in
+                            documentManager.moveFolder(folderId: folder.id, toParent: parentId)
+                            folderToMove = nil
+                            showingMoveFolderSheet = false
+                        },
+                        onCancel: { folderToMove = nil; showingMoveFolderSheet = false }
+                    )
+                }
+            }
+            .sheet(item: $documentToMove) { doc in
+                MoveToFolderSheet(
+                    document: doc,
+                    folders: documentManager.folders(in: nil),
+                    currentFolderId: doc.folderId,
+                    allFolders: documentManager.folders,
+                    currentContainerName: "Documents",
+                    allowRootSelection: true,
+                    onSelectFolder: { folderId in
+                        documentManager.moveDocument(documentId: doc.id, toFolder: folderId)
+                        documentToMove = nil
+                    },
+                    onCancel: { documentToMove = nil }
+                )
+            }
+    }
+
+    private var withDocumentPresentations: some View {
+        withFolderPresentations
+            .sheet(isPresented: $showingDocumentPicker) {
+                DocumentPicker { urls in processImportedFiles(urls) }
+            }
+            .sheet(isPresented: $showingZipExportSheet) {
+                ZipExportView(
+                    preselectedDocumentIds: selectedDocumentIds,
+                    preselectedFolderIds: selectedFolderIds
+                )
+                .environmentObject(documentManager)
+            }
+            .alert("ZIP Name", isPresented: $showingQuickZipNamePrompt) {
+                TextField("Archive name", text: $quickZipName)
+                Button("Create") {
+                    let trimmed = quickZipName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if trimmed.isEmpty {
+                        quickZipAlertMessage = "Please enter a name."
+                        showingQuickZipAlert = true
+                    } else {
+                        createQuickZip(named: trimmed, targetFolderId: nil)
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { Text("Enter a name for the ZIP file.") }
+            .alert("Create Zip", isPresented: $showingQuickZipAlert) {
+                Button("OK", role: .cancel) {}
+            } message: { Text(quickZipAlertMessage) }
+            .onAppear { documentManager.objectWillChange.send() }
+            .fullScreenCover(isPresented: $showingScanner) {
+                if scannerMode == .document, VNDocumentCameraViewController.isSupported {
+                    DocumentScannerView { images in
+                        self.scannedImages = images
+                        self.prepareNamingDialog(for: images)
+                    }
+                    .ignoresSafeArea()
                 } else {
-                    createQuickZip(named: trimmed, targetFolderId: nil)
+                    SimpleCameraView { text in processScannedText(text) }
+                        .ignoresSafeArea()
                 }
             }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Enter a name for the ZIP file.")
-        }
-        .alert("Create Zip", isPresented: $showingQuickZipAlert) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(quickZipAlertMessage)
-        }
-        .onAppear {
-            // Force refresh when the view appears to show newly converted documents
-            documentManager.objectWillChange.send()
-        }
-        .fullScreenCover(isPresented: $showingScanner) {
-            if scannerMode == .document, VNDocumentCameraViewController.isSupported {
-                DocumentScannerView { scannedImages in
-                    self.scannedImages = scannedImages
-                    self.prepareNamingDialog(for: scannedImages)
+            .alert("Camera Access Needed", isPresented: $showingCameraPermissionAlert) {
+                Button("Open Settings") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
                 }
-                .ignoresSafeArea()
-            } else {
-                SimpleCameraView { scannedText in
-                    processScannedText(scannedText)
+                Button("Cancel", role: .cancel) {}
+            } message: { Text("Allow camera access to scan documents.") }
+            .alert("Name Document", isPresented: $showingNamingDialog) {
+                TextField("Document name", text: $customName)
+                Button("Use Suggested") { finalizePendingDocument(with: suggestedName) }
+                Button("Use Custom") {
+                    finalizePendingDocument(with: customName.isEmpty ? suggestedName : customName)
                 }
-                .ignoresSafeArea()
-            }
-        }
-        .alert("Camera Access Needed", isPresented: $showingCameraPermissionAlert) {
-            Button("Open Settings") {
-                if let url = URL(string: UIApplication.openSettingsURLString) {
-                    UIApplication.shared.open(url)
+                Button("Cancel", role: .cancel) {
+                    scannedImages.removeAll()
+                    extractedText = ""
+                    suggestedName = ""
+                    customName = ""
+                    pendingCategory = .general
+                    pendingKeywordsResume = ""
+                    pendingOCRPages = []
+                    isProcessing = false
                 }
+            } message: {
+                Text("Suggested name: \"\(suggestedName)\"\n\nWould you like to use this name or enter a custom one?")
             }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Allow camera access to scan documents.")
-        }
-        .alert("Name Document", isPresented: $showingNamingDialog) {
-            TextField("Document name", text: $customName)
-            
-            Button("Use Suggested") {
-                finalizePendingDocument(with: suggestedName)
-            }
-            
-            Button("Use Custom") {
-                finalizePendingDocument(with: customName.isEmpty ? suggestedName : customName)
-            }
-            
-            Button("Cancel", role: .cancel) {
-                // Only handle scanned documents now since imported files keep original names
-                scannedImages.removeAll()
-                extractedText = ""
-                suggestedName = ""
-                customName = ""
-                pendingCategory = .general
-                pendingKeywordsResume = ""
-                pendingOCRPages = []
-                isProcessing = false
-            }
-        } message: {
-            Text("Suggested name: \"\(suggestedName)\"\n\nWould you like to use this name or enter a custom one?")
-        }
-        .alert("Rename Document", isPresented: $showingRenameDialog) {
-            TextField("Document name", text: $renameText)
-            
-            Button("Rename") {
-                guard let document = documentToRename else { return }
-                let typed = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !typed.isEmpty else { return }
+            .alert("Rename Document", isPresented: $showingRenameDialog) {
+                TextField("Document name", text: $renameText)
+                Button("Rename") {
+                    guard let document = documentToRename else { return }
+                    let typed = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !typed.isEmpty else { return }
 
-                if let idx = documentManager.documents.firstIndex(where: { $0.id == document.id }) {
-                    let old = documentManager.documents[idx]
-
-                    // Preserve the original extension (file type) if the old title had one.
-                    let oldParts = splitDisplayTitle(old.title)
-
-                    // Prevent users from changing file type by typing an extension.
-                    let typedURL = URL(fileURLWithPath: typed)
-                    let typedExt = typedURL.pathExtension.lowercased()
-                    let knownExts: Set<String> = ["pdf", "docx", "ppt", "pptx", "xls", "xlsx", "txt", "png", "jpg", "jpeg", "heic"]
-                    let sanitizedBase = knownExts.contains(typedExt) ? typedURL.deletingPathExtension().lastPathComponent : typed
-
-                    let newTitle = oldParts.ext.isEmpty ? sanitizedBase : "\(sanitizedBase).\(oldParts.ext)"
-
-                    let updated = Document(
-                        id: old.id,
-                        title: newTitle,
+                    if let idx = documentManager.documents.firstIndex(where: { $0.id == document.id }) {
+                        let old = documentManager.documents[idx]
+                        let oldParts = splitDisplayTitle(old.title)
+                        let typedURL = URL(fileURLWithPath: typed)
+                        let typedExt = typedURL.pathExtension.lowercased()
+                        let knownExts: Set<String> = ["pdf", "docx", "ppt", "pptx", "xls", "xlsx", "txt", "png", "jpg", "jpeg", "heic"]
+                        let sanitizedBase = knownExts.contains(typedExt) ? typedURL.deletingPathExtension().lastPathComponent : typed
+                        let newTitle = oldParts.ext.isEmpty ? sanitizedBase : "\(sanitizedBase).\(oldParts.ext)"
+                        let updated = Document(
+                            id: old.id,
+                            title: newTitle,
                         content: old.content,
                         summary: old.summary,
                         ocrPages: old.ocrPages,
@@ -1203,7 +1134,7 @@ struct DocumentsView: View {
 
     private func processImportedFiles(_ urls: [URL]) {
         isProcessing = true
-        let folderId = navigationPath.last?.id
+        let folderId = activeFolderForRoot?.id
 
         Task.detached(priority: .userInitiated) {
             var processedDocuments: [Document] = []
@@ -1335,7 +1266,7 @@ struct DocumentsView: View {
             tags: [],
             sourceDocumentId: nil,
             dateCreated: Date(),
-            folderId: navigationPath.last?.id,
+            folderId: activeFolderForRoot?.id,
             type: .scanned,
             imageData: nil,
             pdfData: nil
@@ -1510,7 +1441,7 @@ struct DocumentsView: View {
             tags: [],
             sourceDocumentId: nil,
             dateCreated: Date(),
-            folderId: navigationPath.last?.id,
+            folderId: activeFolderForRoot?.id,
             type: .scanned,
             imageData: imageDataArray,
             pdfData: pdfData
@@ -2179,13 +2110,13 @@ struct DocumentRowView: View {
     let onSelectToggle: () -> Void
     @EnvironmentObject private var documentManager: DocumentManager
 
+    var showsMoveToFolder: Bool = true
     let onOpen: () -> Void
     let onRename: () -> Void
     let onMoveToFolder: () -> Void
     let onDelete: () -> Void
-    let onConvert: () -> Void
     let onShare: () -> Void
-    
+
     var body: some View {
         let parts = splitDisplayTitle(document.title)
         let dateText = DateFormatter.localizedString(from: document.dateCreated, dateStyle: .medium, timeStyle: .none)
@@ -2263,11 +2194,16 @@ struct DocumentRowView: View {
             onOpen: onOpen
         ))
         .contextMenu {
+            Button(action: onOpen) { Label("Open", systemImage: "doc") }
             Button(action: onShare) { Label("Share", systemImage: "square.and.arrow.up") }
             Button(action: onRename) { Label("Rename", systemImage: "pencil") }
+            if showsMoveToFolder {
+                Button(action: onMoveToFolder) { Label("Move to Folder", systemImage: "folder") }
+            }
+            Divider()
             Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
         }
-        .onDrag { makeDocumentDragProvider(document.id) }
+        .onDrag { makeDragProvider(for: document.id) }
     }
 
 }
@@ -2282,7 +2218,6 @@ struct DocumentGridItemView: View {
     let onRename: () -> Void
     let onMoveToFolder: () -> Void
     let onDelete: () -> Void
-    let onConvert: () -> Void
     let onShare: () -> Void
     let onLongPress: () -> Void
 
@@ -2705,11 +2640,12 @@ struct FolderGridItemView: View {
 
 struct FolderDocumentsView: View {
     let folder: DocumentFolder
-    @Binding var navigationPath: [DocumentFolder]
     let onOpenDocument: (Document) -> Void
     let initialSelectionMode: Bool
     let onSelectionModeChange: (Bool) -> Void
     @EnvironmentObject private var documentManager: DocumentManager
+    @Environment(\.dismiss) private var dismiss
+    @State private var activeFolderItem: DocumentFolder? = nil
     private var layoutMode: DocumentLayoutMode { documentManager.prefersGridLayout ? .grid : .list }
     @AppStorage("documentsSortMode") private var documentsSortModeRaw = DocumentsSortMode.dateNewest.rawValue
     private var documentsSortMode: DocumentsSortMode {
@@ -2779,13 +2715,11 @@ struct FolderDocumentsView: View {
 
     init(
         folder: DocumentFolder,
-        navigationPath: Binding<[DocumentFolder]>,
         onOpenDocument: @escaping (Document) -> Void,
         initialSelectionMode: Bool = false,
         onSelectionModeChange: @escaping (Bool) -> Void = { _ in }
     ) {
         self.folder = folder
-        self._navigationPath = navigationPath
         self.onOpenDocument = onOpenDocument
         self.initialSelectionMode = initialSelectionMode
         self.onSelectionModeChange = onSelectionModeChange
@@ -2885,7 +2819,7 @@ struct FolderDocumentsView: View {
                 onSelectToggle: { toggleFolderSelection(sub.id) },
                 onOpen: {
                     documentManager.updateLastAccessed(id: sub.id)
-                    navigationPath.append(sub)
+                    activeFolderItem = sub
                 },
                 onRename: {
                     folderToRename = sub
@@ -2919,7 +2853,6 @@ struct FolderDocumentsView: View {
                     documentToMove = document
                 },
                 onDelete: { documentManager.deleteDocument(document) },
-                onConvert: { },
                 onShare: { shareDocuments([document]) }
             )
             .tag(document.id)
@@ -2942,7 +2875,7 @@ struct FolderDocumentsView: View {
                 onSelectToggle: { toggleFolderSelection(sub.id) },
                 onOpen: {
                     documentManager.updateLastAccessed(id: sub.id)
-                    navigationPath.append(sub)
+                    activeFolderItem = sub
                 },
                 onRename: {
                     folderToRename = sub
@@ -2960,7 +2893,7 @@ struct FolderDocumentsView: View {
                 isDropTargeted: dropTargetedFolderId == sub.id
             )
             .padding(.horizontal, 8)
-            .onDrag { makeFolderDragProvider(sub.id) }
+            .onDrag { makeDragProvider(for: sub.id) }
             .onDrop(
                 of: [UTType.plainText, UTType.text, UTType.data],
                 delegate: ListFolderDropDelegate(
@@ -2982,11 +2915,10 @@ struct FolderDocumentsView: View {
                     documentToMove = document
                 },
                 onDelete: { documentManager.deleteDocument(document) },
-                onConvert: { },
                 onShare: { shareDocuments([document]) }
             )
             .padding(.horizontal, 8)
-            .onDrag { makeDocumentDragProvider(document.id) }
+            .onDrag { makeDragProvider(for: document.id) }
         }
     }
 
@@ -3002,12 +2934,11 @@ struct FolderDocumentsView: View {
                     onOpenDocument: { onOpenDocument($0) },
                     onOpenFolder: { sub in
                         documentManager.updateLastAccessed(id: sub.id)
-                        navigationPath.append(sub)
+                        activeFolderItem = sub
                     },
                     onRenameDocument: { renameDocument($0) },
                     onMoveDocument: { documentToMove = $0 },
                     onDeleteDocument: { documentManager.deleteDocument($0) },
-                    onConvertDocument: { _ in },
                     onShareDocuments: { shareDocuments($0) },
                     onRenameFolderRequest: { sub in
                         folderToRename = sub
@@ -3040,7 +2971,7 @@ struct FolderDocumentsView: View {
                             onSelectToggle: { toggleFolderSelection(sub.id) },
                             onOpen: {
                                 documentManager.updateLastAccessed(id: sub.id)
-                                navigationPath.append(sub)
+                                activeFolderItem = sub
                             },
                             onRename: {
                                 folderToRename = sub
@@ -3060,7 +2991,7 @@ struct FolderDocumentsView: View {
                                 beginSelection(folderId: sub.id)
                             }
                         )
-                        .onDrag { makeFolderDragProvider(sub.id) }
+                        .onDrag { makeDragProvider(for: sub.id) }
                         .onDrop(
                             of: [UTType.plainText, UTType.text, UTType.data],
                             delegate: FolderDropDelegate(
@@ -3081,13 +3012,12 @@ struct FolderDocumentsView: View {
                             onRename: { renameDocument(document) },
                             onMoveToFolder: { documentToMove = document },
                             onDelete: { documentManager.deleteDocument(document) },
-                            onConvert: { },
                             onShare: { shareDocuments([document]) },
                             onLongPress: {
                                 beginSelection(documentId: document.id)
                             }
                         )
-                        .onDrag { makeDocumentDragProvider(document.id) }
+                        .onDrag { makeDragProvider(for: document.id) }
                     }
                 }
             }
@@ -3109,6 +3039,14 @@ struct FolderDocumentsView: View {
         .background(Color(.systemGroupedBackground))
         .navigationTitle(folder.name)
         .navigationBarTitleDisplayMode(.large)
+        .navigationDestination(item: $activeFolderItem) { subfolder in
+            FolderDocumentsView(
+                folder: subfolder,
+                onOpenDocument: onOpenDocument,
+                onSelectionModeChange: { _ in }
+            )
+            .environmentObject(documentManager)
+        }
     }
 
     @ToolbarContentBuilder
@@ -3274,8 +3212,7 @@ struct FolderDocumentsView: View {
     private var folderScaffold: some View {
         folderBaseContent
             .toolbar { folderToolbar }
-        .navigationBarBackButtonHidden(isSelectionMode)
-        .tabBarVisibility(isSelectionMode)
+            .tabBarVisibility(isSelectionMode)
         .tabBarHiddenCompat(isSelectionMode)
         .bottomBarVisibility(isSelectionMode)
         .bindGlobalOperationLoading(isProcessing)
@@ -3285,7 +3222,7 @@ struct FolderDocumentsView: View {
             }
             onSelectionModeChange(isSelectionMode)
         }
-        .onChange(of: isSelectionMode) { active in
+        .onChange(of: isSelectionMode) { _, active in
             editMode = active ? .active : .inactive
             onSelectionModeChange(active)
         }

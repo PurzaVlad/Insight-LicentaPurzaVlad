@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>CLIENT_ID</key>
-	<string>465197966526-f2o5l85pcig2feglk2ek1dj2lmn0qeh4.apps.googleusercontent.com</string>
+	<string>465197966526-0o33hipsqrd2rucjrr7hckggki67svv7.apps.googleusercontent.com</string>
 	<key>REVERSED_CLIENT_ID</key>
-	<string>com.googleusercontent.apps.465197966526-f2o5l85pcig2feglk2ek1dj2lmn0qeh4</string>
+	<string>com.googleusercontent.apps.465197966526-0o33hipsqrd2rucjrr7hckggki67svv7</string>
 	<key>API_KEY</key>
 	<string>AIzaSyCQhrRRpWNqfsJQ0pb1TunW9mfkKECPoLU</string>
 	<key>GCM_SENDER_ID</key>
@@ -13,7 +13,7 @@
 	<key>PLIST_VERSION</key>
 	<string>1</string>
 	<key>BUNDLE_ID</key>
-	<string>com.purzavlad.insight</string>
+	<string>com.purzavlad1.insight</string>
 	<key>PROJECT_ID</key>
 	<string>licentaserver-485712</string>
 	<key>STORAGE_BUCKET</key>
@@ -29,6 +29,6 @@
 	<key>IS_SIGNIN_ENABLED</key>
 	<true></true>
 	<key>GOOGLE_APP_ID</key>
-	<string>1:465197966526:ios:19ad08feabefd5f3cbaaef</string>
+	<string>1:465197966526:ios:285242d663b53ac9cbaaef</string>
 </dict>
 </plist>

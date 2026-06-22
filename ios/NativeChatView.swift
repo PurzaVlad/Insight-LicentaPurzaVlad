@@ -2196,6 +2196,46 @@ struct NativeChatView: View {
         """
     }
 
+    /// Re-examination prompt: used when the user challenges or disputes a previous answer.
+    /// Gives the model full context of the prior exchange and instructs it to try harder
+    /// before we fall back to showing raw chunks.
+    private func buildReexaminationPrompt(
+        question: String,
+        originalQuestion: String?,
+        lastResponse: String?,
+        selectedHits: [ChunkHit]
+    ) -> String {
+        let evidence = buildEvidenceFromSelectedHits(selectedHits, maxChars: activeContextCharBudget)
+        let historyBlock = buildConversationHistoryBlock()
+
+        let reexamInstruction: String
+        if let orig = originalQuestion, let last = lastResponse {
+            reexamInstruction = """
+
+            PRIOR_EXCHANGE:
+            User asked: \(compact(orig, maxChars: 200))
+            You answered: \(compact(last, maxChars: 200))
+
+            The user is now questioning or following up on that answer. Re-examine the passages carefully. Correct any mistake you made or give a fuller explanation. Answer directly and specifically based only on what the passages say.
+            """
+        } else {
+            reexamInstruction = "\nLook carefully through every passage and give a direct, specific answer."
+        }
+
+        return """
+        SYSTEM:
+        \(chatPreprompt)
+        \(historyBlock)
+        \(reexamInstruction)
+
+        QUESTION:
+        \(question)
+
+        PASSAGES:
+        \(evidence)
+        """
+    }
+
     /// Exploratory prompt: used when the user challenges a previous answer or when
     /// the standard prompt failed. Asks the LLM to write a short intro, then we
     /// append the raw chunk quotes so the user can see the evidence directly.
@@ -2502,24 +2542,23 @@ struct NativeChatView: View {
             return ChatLLMResult(reply: "Not specified in the documents.", primaryDocument: nil, rewrittenQuery: queryAnalysis?.rewrittenQuery)
         }
 
-        // For challenges/disputes/clarifications: use direct quote response
-        // (LLM writes short intro, then we append raw chunk text in quotes)
-        let useDirectQuotes = isChallengeDispute || queryAnalysis?.intent == "followup_clarification"
-
         // Always show the user's original question to the model — effectiveQuestion is for retrieval only.
         let finalReply: String
-        if useDirectQuotes {
-            let introPrompt = buildExploratoryPrompt(
+        if isChallengeDispute || queryAnalysis?.intent == "followup_clarification" {
+            // Try harder first: give the model full context of the prior exchange and ask it to re-examine.
+            let reexamPrompt = buildReexaminationPrompt(
                 question: question,
                 originalQuestion: sessionState.lastOriginalQuestion,
                 lastResponse: sessionState.lastAssistantResponse,
                 selectedHits: hitsToUse
             )
-            let introReply = try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(introPrompt))
-            finalReply = buildDirectQuoteResponse(
-                introReply: introReply,
-                selectedHits: hitsToUse
-            )
+            let reexamReply = try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(reexamPrompt))
+            // Only fall back to raw chunks if the model genuinely can't find the answer.
+            if isNotFoundResponse(reexamReply) {
+                finalReply = buildDirectQuoteResponse(introReply: reexamReply, selectedHits: hitsToUse)
+            } else {
+                finalReply = reexamReply
+            }
         } else {
             let prompt = buildAnswerPrompt(
                 question: question,
@@ -2711,7 +2750,6 @@ struct NativeChatView: View {
                                     onRename: {},
                                     onMoveToFolder: {},
                                     onDelete: {},
-                                    onConvert: {},
                                     onShare: {}
                                 )
                                 .tag(document.id)

@@ -21,12 +21,12 @@ type Message = {
 };
 
 
-const MODEL_FILENAME = 'Qwen2.5-1.5B-Instruct.Q4_K_M.gguf';
+const MODEL_FILENAME = 'Qwen_Qwen3-1.7B-Q4_0.gguf';
 const MODEL_URL =
-  'https://huggingface.co/MaziyarPanahi/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct.Q4_K_M.gguf';
+  'https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q4_0.gguf';
 const MODEL_DOWNLOAD_STATE_KEY = 'edgeai:model_download_state';
 const MODEL_DOWNLOAD_IN_PROGRESS = 'in_progress';
-const LLAMA_N_CTX = 2048;
+const LLAMA_N_CTX = 3072;
 const DEFAULT_MAX_NEW_TOKENS = 250;
 const DEFAULT_TEMPERATURE = 0.2;
 const CHAT_TEMPERATURE = 0.35;
@@ -34,7 +34,7 @@ const DEFAULT_TOP_P = 0.9;
 const DEFAULT_REPEAT_PENALTY = 1.1;
 const CHAT_REPEAT_PENALTY = 1.15;
 const MAX_CHAT_HISTORY_MESSAGES = 3;
-const MIN_MODEL_FILE_SIZE_BYTES = 200 * 1024 * 1024;
+const MIN_MODEL_FILE_SIZE_BYTES = 1000 * 1024 * 1024;
 
 
 const TAG_SYSTEM_PROMPT = `You are a document tagger. Extract the most specific and meaningful tags from the document content. Output each tag on its own line, nothing else.`;
@@ -79,6 +79,8 @@ function App(): React.JSX.Element {
 
   // Keep conversation in JS so you can pass it to the model
   const conversationRef = useRef<Message[]>(INITIAL_CONVERSATION);
+  // Mirror of `context` state as a ref so processQueue always sees the latest value
+  const contextRef = useRef<any>(null);
   // Guard against duplicate initialization
   const isInitializingRef = useRef(false);
   // Serialize AI requests to avoid "context is busy" errors
@@ -89,6 +91,12 @@ function App(): React.JSX.Element {
   const abortCurrentRef = useRef(false);
   const canceledRequestIdsRef = useRef<Set<string>>(new Set());
   const pendingSummaryRestartRef = useRef<{ requestId: string; prompt: string } | null>(null);
+
+  useEffect(() => {
+    if (isDownloading) {
+      EdgeAI?.setDownloadProgress?.(downloadProgress / 100.0);
+    }
+  }, [downloadProgress, isDownloading]);
 
   useEffect(() => {
     let cancelled = false;
@@ -303,6 +311,7 @@ function App(): React.JSX.Element {
           return;
         }
 
+        contextRef.current = llamaContext;
         setContext(llamaContext);
         try {
           EdgeAI?.setModelReady?.(true);
@@ -356,12 +365,19 @@ useEffect(() => {
         return `<|im_start|>${roleLabel}\n${m.content.trim()}\n<|im_end|>`;
       })
       .join('\n');
-    return `${sections}\n<|im_start|>assistant\n`;
+    return `${sections}\n<|im_start|>assistant\n<think>\n\n</think>\n`;
   };
 
   const stopTokensForModel = (): string[] => {
     return ['<|im_end|>', '<|im_start|>', '<|system|>', '<|assistant|>', '<|user|>', '</s>', '<|endoftext|>'];
   };
+
+  const stripThinkingBlocks = (text: string): string =>
+    text
+      .replace(/<think>[\s\S]*?<\/think>/g, '') // complete blocks
+      .replace(/<think>[\s\S]*/g, '')            // unclosed blocks (token-limit cutoff mid-thought)
+      .replace(/^[\s\n]+/, '')
+      .trim();
 
   const truncateChatHistory = (messages: Message[]): Message[] => {
     const systemMessage = [...messages].reverse().find((message) => message.role === 'system');
@@ -504,7 +520,7 @@ useEffect(() => {
           : truncateChatHistory([...conversationRef.current, userMessage]);
 
         try {
-          if (!context) {
+          if (!contextRef.current) {
             throw new Error('Model context is not initialized');
           }
           
@@ -543,7 +559,7 @@ useEffect(() => {
             const continuationPrompt = formatPrompt(continuationMessages);
             const continuationTemperature = CHAT_TEMPERATURE;
             const continuationRepeatPenalty = CHAT_REPEAT_PENALTY;
-            const continuationResult = await context.completion(
+            const continuationResult = await contextRef.current.completion(
               {
                 prompt: continuationPrompt,
                 n_predict: Math.min(nPredict, DEFAULT_MAX_NEW_TOKENS),
@@ -557,7 +573,7 @@ useEffect(() => {
               () => {}
             );
 
-            let out = (continuationResult?.text ?? '').trim();
+            let out = stripThinkingBlocks(continuationResult?.text ?? '');
             out = out.replace(/\b(\w+)\b(?:\s+\1){3,}/gi, '$1');
             return out;
           };
@@ -566,7 +582,7 @@ useEffect(() => {
           if (isName) {
             const nPredictClamped = 50;
             const namePrompt = formatPrompt(messagesForAI);
-            const nameResult = await context.completion(
+            const nameResult = await contextRef.current.completion(
               {
                 prompt: namePrompt,
                 n_predict: nPredictClamped,
@@ -579,12 +595,12 @@ useEffect(() => {
               },
               () => {}
             );
-            text = (nameResult?.text ?? '').trim();
+            text = stripThinkingBlocks(nameResult?.text ?? '');
             generationHitTokenLimit = inferHitTokenLimit(nameResult, nPredictClamped, text);
           } else if (isTag) {
             const nPredictClamped = nPredictOverride ?? 60;
             const tagPrompt = formatPrompt(messagesForAI);
-            const tagResult = await context.completion(
+            const tagResult = await contextRef.current.completion(
               {
                 prompt: tagPrompt,
                 n_predict: nPredictClamped,
@@ -597,14 +613,14 @@ useEffect(() => {
               },
               () => {}
             );
-            text = (tagResult?.text ?? '').trim();
+            text = stripThinkingBlocks(tagResult?.text ?? '');
             generationHitTokenLimit = inferHitTokenLimit(tagResult, nPredictClamped, text);
           } else if (isKeyword) {
             // Keyword: ask model to identify document type.
             // No '\n' stop — Qwen often starts with a blank line, which would fire immediately.
             // Instead rely on n_predict=30 + first-line extraction below.
             const keywordPrompt = formatPrompt(messagesForAI);
-            const keywordResult = await context.completion(
+            const keywordResult = await contextRef.current.completion(
               {
                 prompt: keywordPrompt,
                 n_predict: 20,
@@ -619,7 +635,7 @@ useEffect(() => {
             );
             // Take first non-empty, non-preamble line; fall back to next line if first was all preamble.
             const preambleRe = /^\s*(Sure[,!]?|Here(?:\s+(?:is|are|follows))?|I will|I'll|I can|As requested[,:]?|Below[:\s])[^\n]*?[.!?:]\s*/i;
-            const kwLines = (keywordResult?.text ?? '').split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0);
+            const kwLines = stripThinkingBlocks(keywordResult?.text ?? '').split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0);
             let kwText = kwLines[0] ?? '';
             kwText = kwText.replace(preambleRe, '').trim();
             if (!kwText && kwLines.length > 1) kwText = kwLines[1] ?? '';
@@ -635,7 +651,7 @@ useEffect(() => {
               { role: 'system', content: 'Group these documents into 2-4 thematic subfolders. Return ONLY valid JSON with no explanation: {"subfolders":[{"name":"...","docs":["uuid1"]}]}', timestamp: Date.now() },
               { role: 'user', content: splitContent, timestamp: Date.now() },
             ]);
-            const splitResult = await context.completion({
+            const splitResult = await contextRef.current.completion({
               prompt: splitPrompt,
               n_predict: 200,
               temperature: DEFAULT_TEMPERATURE,
@@ -655,7 +671,7 @@ useEffect(() => {
               { role: 'system', content: 'Reply with only the subfolder name, nothing else.', timestamp: Date.now() },
               { role: 'user', content: routeContent, timestamp: Date.now() },
             ]);
-            const routeResult = await context.completion({
+            const routeResult = await contextRef.current.completion({
               prompt: routePrompt,
               n_predict: 15,
               temperature: DEFAULT_TEMPERATURE,
@@ -685,7 +701,7 @@ useEffect(() => {
             };
 
             console.log('[EdgeAI] Calling context.completion with params:', Object.keys(completionParams));
-            const result = await context.completion(completionParams, () => {});
+            const result = await contextRef.current.completion(completionParams, () => {});
 
             console.log('[EdgeAI] Got result:', {
               hasText: !!result?.text,
@@ -693,7 +709,7 @@ useEffect(() => {
               textPreview: result?.text?.substring(0, 100)
             });
 
-            text = (result?.text ?? '').trim();
+            text = stripThinkingBlocks(result?.text ?? '');
             generationHitTokenLimit = inferHitTokenLimit(result, nPredictClamped, text);
           }
 
@@ -1083,8 +1099,8 @@ useEffect(() => {
             text = text.trim();
           }
 
-          // Remove any leftover chat/template markers (failsafe).
-          text = text.replace(/<\|[^|>]*\|>/g, '').trim();
+          // Remove any leftover chat/template markers and thinking blocks (failsafe).
+          text = stripThinkingBlocks(text).replace(/<\|[^|>]*\|>/g, '').trim();
 
           if (abortCurrentRef.current && isSummaryTask) {
             abortCurrentRef.current = false;
@@ -1121,7 +1137,29 @@ useEffect(() => {
         } catch (e: any) {
           console.error('[EdgeAI] Generation error:', e);
           const errorMsg = e?.message ?? 'Unknown error';
-          if (abortCurrentRef.current && isSummaryTask) {
+          const isFatalCtxError = /context not found|context is full/i.test(errorMsg);
+          if (isFatalCtxError) {
+            console.warn('[EdgeAI] Fatal context error — reinitializing model...');
+            conversationRef.current = INITIAL_CONVERSATION;
+            try {
+              releaseAllLlama();
+              const filePath = `${RNFS.DocumentDirectoryPath}/${MODEL_FILENAME}`;
+              const newCtx = await initLlama({
+                model: filePath,
+                use_mlock: false,
+                n_ctx: LLAMA_N_CTX,
+                n_gpu_layers: -1,
+              });
+              contextRef.current = newCtx;
+              setContext(newCtx);
+              console.log('[EdgeAI] Model reinitialized successfully');
+            } catch (reinitErr: any) {
+              console.error('[EdgeAI] Reinitialization failed:', reinitErr);
+              contextRef.current = null;
+              setContext(null);
+            }
+            EdgeAI.rejectRequest(requestId, 'CTX_RESET', 'The AI context was reset. Please try again.');
+          } else if (abortCurrentRef.current && isSummaryTask) {
             abortCurrentRef.current = false;
           } else {
             EdgeAI.rejectRequest(requestId, 'GEN_ERR', errorMsg);
@@ -1168,7 +1206,7 @@ useEffect(() => {
           pendingSummaryRestartRef.current = { requestId: currentSummary.requestId, prompt: currentSummary.prompt };
         }
         abortCurrentRef.current = true;
-        context?.stopCompletion().catch((err: any) => {
+        contextRef.current?.stopCompletion()?.catch((err: any) => {
           console.warn('[EdgeAI] Failed to stop summary completion:', err);
         });
         queueRef.current.unshift({ requestId, prompt });
@@ -1200,7 +1238,7 @@ useEffect(() => {
     console.log('[EdgeAI] Cancel requested for job:', current.requestId);
     canceledRequestIdsRef.current.add(current.requestId);
     try {
-      await context?.stopCompletion();
+      await contextRef.current?.stopCompletion();
     } catch (err: any) {
       console.warn('[EdgeAI] stopCompletion failed:', err);
     }

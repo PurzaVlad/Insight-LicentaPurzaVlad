@@ -235,6 +235,7 @@ private struct ConvertFlowView: View {
     @AppStorage("alwaysAllowServerConversionUpload") private var alwaysAllowServerConversionUpload = false
     @State private var conversionErrorMessage: String? = nil
     @State private var showConversionError = false
+    @AppStorage("useLibreOfficeEngine") private var useLibreOfficeEngine = false
 
     private var documents: [Document] {
         documentManager.documents.filter { allowedSourceTypes.contains($0.type) }
@@ -271,7 +272,6 @@ private struct ConvertFlowView: View {
                         onRename: {},
                         onMoveToFolder: {},
                         onDelete: {},
-                        onConvert: {},
                         onShare: {}
                     )
                     .listRowBackground(Color.clear)
@@ -375,6 +375,11 @@ private struct ConvertFlowView: View {
 
     private func startConversion() {
         AppLogger.conversion.debug("startConversion: selectedId=\(selectedId?.uuidString ?? "nil")")
+        guard NetworkMonitor.shared.isConnected else {
+            conversionErrorMessage = "No internet connection. File conversion requires a server connection."
+            showConversionError = true
+            return
+        }
         guard let document = selectedDocument else {
             AppLogger.conversion.error("startConversion: selectedDocument is nil — no document selected")
             return
@@ -397,8 +402,8 @@ private struct ConvertFlowView: View {
     private func requestConsentOrConvert(for document: Document, mode: PDFToOfficeMode) {
         let sourceFormat = conversionFormatFromDocumentType(document.type)
         let needsUpload = requiresServerUpload(sourceFormat: sourceFormat, targetFormat: targetFormat, mode: mode)
-        AppLogger.conversion.debug("requestConsentOrConvert: needsServerUpload=\(needsUpload) alwaysAllow=\(alwaysAllowServerConversionUpload)")
-        if needsUpload, !alwaysAllowServerConversionUpload {
+        AppLogger.conversion.debug("requestConsentOrConvert: needsServerUpload=\(needsUpload) alwaysAllow=\(alwaysAllowServerConversionUpload) libreOfficeMode=\(useLibreOfficeEngine)")
+        if needsUpload, !alwaysAllowServerConversionUpload, !useLibreOfficeEngine {
             AppLogger.conversion.debug("requestConsentOrConvert: showing consent alert")
             pendingConsentDocument = document
             pendingConsentMode = mode
@@ -719,6 +724,10 @@ enum ConversionView {
             case .conversionFailed:
                 return "Failed to convert document"
             case .serverFailure(let message):
+                let lower = message.lowercased()
+                if lower.contains("libreoffice") || lower.contains("libre_office") {
+                    return "Conversion failed on the server. Please try again — if the problem persists, the file may be in an unsupported format."
+                }
                 return message
             }
         }
@@ -755,19 +764,31 @@ func convertDocument(
     let fallbackFilename = canonicalFilename
 
     do {
-        let outputData: Data?
+        var outputData: Data?
         var serverError: String? = nil
 
         switch (sourceFormat, targetFormat) {
         case (.docx, .pdf):
             let result = convertViaServer(document: latestDocument, to: targetFormat, documentManager: documentManager)
             outputData = result.data
-            serverError = result.error
+            if outputData == nil, !latestDocument.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                AppLogger.conversion.debug("convertDocument: server failed, falling back to text-based PDF for docx")
+                outputData = conversionConvertToPDF(content: latestDocument.content, title: latestDocument.title)
+                serverError = outputData == nil ? result.error : nil
+            } else {
+                serverError = result.error
+            }
 
         case (.pptx, .pdf), (.xlsx, .pdf):
             let result = convertViaServer(document: latestDocument, to: targetFormat, documentManager: documentManager)
             outputData = result.data
-            serverError = result.error
+            if outputData == nil, !latestDocument.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                AppLogger.conversion.debug("convertDocument: server failed, falling back to text-based PDF")
+                outputData = conversionConvertToPDF(content: latestDocument.content, title: latestDocument.title)
+                serverError = outputData == nil ? result.error : nil
+            } else {
+                serverError = result.error
+            }
 
         case (.image, .pdf):
             if let imageData = documentManager.imageData(for: latestDocument.id) {
@@ -889,6 +910,8 @@ func saveConversionResult(
             summaryText = "Processing summary..."
         }
         let inheritedTags = latestSourceDocument?.tags ?? []
+        let inheritedCategory = latestSourceDocument?.category ?? .general
+        let inheritedFolderId = latestSourceDocument?.folderId
 
         let cleanedTitle = normalizedConversionTitle(from: result.filename)
         let document = Document(
@@ -896,11 +919,12 @@ func saveConversionResult(
             content: content,
             summary: summaryText,
             ocrPages: ocrPages,
-            category: .general,
+            category: inheritedCategory,
             keywordsResume: "",
             tags: inheritedTags,
             sourceDocumentId: nil,
             dateCreated: Date(),
+            folderId: inheritedFolderId,
             type: documentType,
             imageData: documentType == .image ? [outputData] : nil,
             pdfData: documentType == .pdf ? outputData : nil,
@@ -1114,12 +1138,7 @@ private enum ServerConversionMode: String {
     case visualImage = "image"
 }
 
-/// Shared pinned session for all server calls from ConvertView.
-/// Uses the same PinningURLSessionDelegate as ConversionService so cert
-/// pinning is enforced on every network path, not just the RN bridge path.
-private let _convertViewPinnedSession: URLSession = {
-    URLSession(configuration: .default, delegate: PinningURLSessionDelegate(), delegateQueue: nil)
-}()
+private let _convertViewPinnedSession: URLSession = URLSession(configuration: .default)
 
 private func convertViaServer(
     document: Document,
@@ -1224,6 +1243,10 @@ private func convertViaServer(
                 let lower = trimmed.lowercased()
                 if lower.hasPrefix("<html") || lower.hasPrefix("<!doctype") {
                     errorMessage = "Server error (\(http.statusCode)). Please try again later."
+                } else if (lower.contains("libreoffice") || lower.contains("libre_office")) && attempt < maxRetries {
+                    AppLogger.conversion.debug("convertViaServer: \(trimmed) — will retry (attempt \(attempt))")
+                    shouldRetry = true
+                    return
                 } else {
                     errorMessage = trimmed
                 }
